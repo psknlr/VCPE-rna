@@ -62,8 +62,15 @@ def main():
     p.add_argument("--p2_ckpt", type=str, required=True)
     p.add_argument("--rna_encoder_ckpt", type=str, required=True)
     p.add_argument("--fasta", type=str, required=True)
-    p.add_argument("--n_test", type=int, default=8, help="test perts to probe")
-    p.add_argument("--n_train", type=int, default=4, help="train perts to probe")
+    p.add_argument("--n_test", type=int, default=32,
+                   help="test perturbations to probe. The P2 erratum was "
+                        "originally run with 8 test + 4 train probes; the "
+                        "conclusion was unambiguous (r ~= 1.000 throughout), but "
+                        "12 probes is too few to quantify a borderline case, so "
+                        "the default is now higher.")
+    p.add_argument("--n_train", type=int, default=16,
+                   help="train perturbations to probe (the 'memorised training "
+                        "perturbations only' control)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--string_neighbors", type=str, default="",
                    help="P2.2: string_neighbors.npy (network axis); empty = off")
@@ -197,6 +204,7 @@ def main():
         msk_t = torch.tensor([msk], device=device).bool()
 
         pr_real = None
+        captured = {}
         for style, pv in [("eval(S=8) real", None), ("export(S=1) real", pv_real),
                           ("export zeroPert", pv_zero), ("export swapPert", pv_swap)]:
             with torch.no_grad():
@@ -214,15 +222,31 @@ def main():
                   if true_fc.std() > 1e-6 and pred_fc.std() > 1e-6 else 0.0)
             if style.startswith("export(S=1)"):
                 pr_real = pred_fc.copy()
+            captured[style] = pred_fc.copy()
             print(f"{split:6} {di:3} {cond:18} {style:16} "
                   f"{pred_fc.std():8.4f} {np.abs(pred_fc).max():8.4f} {pr:8.3f}",
                   flush=True)
-        # 关键判据：real 输出与 zeroPert 输出的相关（≈1 → pert token 被架空）
-        pz = (float(np.corrcoef(pr_real, pred_fc)[0, 1])
-              if pr_real is not None and pr_real.std() > 1e-6 and pred_fc.std() > 1e-6
-              else float("nan"))
+
+        # Key criterion: r(real output, ablated output) ~= 1 means the
+        # perturbation token is being bypassed.
+        #
+        # This block previously printed one number labelled "(real vs zeroPert
+        # r)" while correlating against `pred_fc`, which at loop exit held the
+        # LAST iteration's output -- i.e. swapPert, not zeroPert. The direction
+        # of the P2 conclusion is unaffected (both ablations read ~1.000 there),
+        # but the label did not match the quantity. Both are now computed and
+        # printed separately.
+        def _r(a, b):
+            if a is None or b is None or a.std() <= 1e-6 or b.std() <= 1e-6:
+                return float("nan")
+            return float(np.corrcoef(a, b)[0, 1])
+
+        pz = _r(pr_real, captured.get("export zeroPert"))
+        ps = _r(pr_real, captured.get("export swapPert"))
         print(f"{'':6} {'':3} {'(real vs zeroPert r)':18} {'':16} "
               f"{'':8} {'':8} {'':8} {pz:12.3f}", flush=True)
+        print(f"{'':6} {'':3} {'(real vs swapPert r)':18} {'':16} "
+              f"{'':8} {'':8} {'':8} {ps:12.3f}", flush=True)
         print(f"{'':6} {'':3} {'(true_fc)':18} {'':16} "
               f"{true_fc.std():8.4f} {np.abs(true_fc).max():8.4f} {'1.000':>8}",
               flush=True)

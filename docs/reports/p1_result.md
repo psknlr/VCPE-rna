@@ -1,5 +1,7 @@
 # VCPE-rna P1 Training Result (G2 Gate Report)
 
+> **⚠️ Numbers in this report are withdrawn.** The checkpoint was selected on the slice being reported, and the perturbation-mean baseline was miscomputed (it held the last training perturbation's profile, not a mean). See [../ERRATA.md](../ERRATA.md), E3 and E12a.
+
 - Date: 2026-08-31
 - Setup: MAP base (MIT) + knockdown conditioning (ESM2 gene embedding → kd_projector); SE base frozen
   (868.6 M / trainable 152.8 M)

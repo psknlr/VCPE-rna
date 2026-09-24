@@ -1,13 +1,35 @@
 #!/usr/bin/env python
-"""同裁判对比：XGBoost v5 (design pipeline) vs efficacy_v1 (transformer)。
+"""Same-judge comparison: a locally retrained XGBoost vs the efficacy transformer.
 
-协议：aso_atlas_clean.parquet + build_split(seed=0, n_holdout_genes=15) 复现
-efficacy_v1 的 patent-group/gene-holdout 划分（ckpt metrics n=21989 互证）；
-XGBoost 在同 train 上重训（同超参、化学 8 维由 sugar/backbone 串等价重建、
-cell/gene one-hot 与剂量 median 只来自 train），两模型在同一 val_group /
-val_gene 上评 PCC/Spearman/enrich_top5。公平性口径：
-- 评测行限制在 XGBoost 原生序列域（16-20nt）内的共同子集；
-- y 统一 = inhibition_clipped/100。
+READ BEFORE USING ANY NUMBER THIS PRODUCES.
+
+This script does NOT compare against OligoAI, ASOptimizer, OligoWalk or
+RNAGenesis; it compares two of this repository's own models. It also does not
+evaluate the `xgboost_v5` model referenced in `predict_service.py` -- that model
+is not distributed here. It retrains a fresh XGBoost locally.
+
+Two structural fairness problems make its `val_gene` numbers uninterpretable,
+and they cancel in OPPOSITE directions, so the result cannot be read as a
+head-to-head at all:
+
+  1. The XGBoost encodes the target gene as a one-hot over genes with >= 100
+     training rows. Every held-out gene is therefore out of vocabulary by
+     construction, so on `val_gene` the XGBoost has ZERO gene information while
+     the transformer has an ESM2 embedding. That comparison is rigged in the
+     transformer's favour.
+  2. The transformer checkpoint was, before v4, selected on `val_group` -- one
+     of the two evaluation slices here (docs/ERRATA.md E3). On `val_group` the
+     comparison is rigged in the transformer's favour too, for a different
+     reason. Re-train with the current `train_efficacy.py`, which selects on an
+     inner split, before running this.
+
+A defensible comparison would give both models the same conditioning
+information and select both on data neither is scored on. Until then, treat the
+output as a smoke test, not evidence.
+
+Requires `extract_aso_features_full` from a private platform package reached via
+$RNA_ROBOT_HOME; without it this script cannot run, and no result file for it
+has ever been committed.
 """
 import os
 import sys
@@ -22,11 +44,7 @@ if RNA_ROBOT and os.path.isdir(RNA_ROBOT):
     sys.path.insert(0, RNA_ROBOT)
 
 import train_efficacy as te
-from types import SimpleNamespace
-te.args = SimpleNamespace(n_holdout_genes=15)  # build_split 依赖
-
-from model_efficacy import EfficacyHead
-from sklearn.model_selection import KFold  # noqa: F401 (对齐 xgb 训练环境)
+from model_efficacy import load_efficacy_head
 
 CKPT = os.path.abspath(os.path.join(HERE, "..", "..", "results", "efficacy_v1",
                                     "ckpt_efficacy_v1.pt"))
@@ -35,7 +53,8 @@ ESM_TABLE = te.ESM_TABLE
 # ---------- 数据与 split ----------
 df = pd.read_parquet(str(te.DATA / "aso_atlas_clean.parquet"))
 print(f"rows={len(df):,}", flush=True)
-train_df, val_group, val_gene, holdout_genes = te.build_split(df, 0)
+train_df, inner_val, val_group, val_gene, holdout_genes = te.build_split(
+    df, 0, n_holdout_genes=15)
 print(f"train={len(train_df):,} val_group={len(val_group):,} "
       f"val_gene={len(val_gene):,} holdout_genes={len(holdout_genes)}", flush=True)
 
@@ -58,8 +77,10 @@ gene2row = {s: i for i, s in enumerate(symbols)}
 gene2row["UNKNOWN"] = 0            # te.evaluate 的 default 急切求值需要键存在（cov 过滤后不会命中）
 n_cell = ck["model_state_dict"]["cell_emb.weight"].shape[0]
 ck["cell2id"].setdefault("UNKNOWN", n_cell - 1)  # 末行未知回退保留位
-model = EfficacyHead(esm, n_cell_lines=n_cell)
-model.load_state_dict(ck["model_state_dict"])
+# honours the checkpoint's arch_config, so a pre-v4 (position-free,
+# legacy-vocabulary) checkpoint is rebuilt as itself rather than
+# reinterpreted under the current layout
+model, _arch = load_efficacy_head(ck, esm, n_cell)
 model.to(device).eval()
 print("transformer loaded", flush=True)
 
@@ -132,9 +153,10 @@ def xgb_matrix(d):
         X[i, :47] = f
         X[i, 47 + cell_vocab.get(sl[i], len(cell_vocab))] = 1.0
         X[i, 47 + len(cell_vocab) + 1 + gene_vocab.get(gl[i], len(gene_vocab))] = 1.0
-        dd = dl[i] if dl[i] == dl[i] else dose_med
+        miss = 0.0 if dl[i] == dl[i] else 1.0
+        dd = dl[i] if miss == 0.0 else dose_med
         X[i, -2] = dd / 5.0
-        X[i, -1] = dd / 5.0
+        X[i, -1] = miss      # missing flag; pre-v4 this duplicated the dose
     return X, y
 
 print("building xgb features...", flush=True)
@@ -156,7 +178,9 @@ def metrics(y, p):
     top_true = set(np.argsort(-y)[: max(1, len(y) // 20)])
     top_pred = set(np.argsort(-p)[: max(1, len(p) // 20)])
     return dict(spearman=round(rho, 4), pearson=round(r, 4),
-                enrich_top5=round(len(top_true & top_pred) / max(1, len(top_true)) * 5, 3),
+                # normalised so 1.0 == random; pre-v4 used *5, putting chance
+                # at 0.25 (docs/ERRATA.md E2)
+                enrich_top5=round(len(top_true & top_pred) / max(1, len(top_true)) * 20, 3),
                 n=len(y))
 
 for name, d in [("val_group", vg), ("val_gene", vgene)]:
@@ -165,6 +189,4 @@ for name, d in [("val_group", vg), ("val_gene", vgene)]:
     m = metrics(y_ev, p)
     print(f"[xgboost] {name} {m}", flush=True)
 
-# 新靶点子集：test 中不在 xgb gene_vocab 的行（transformer ESM 轴 vs one-hot 回退）
-novel = d["target_gene"].astype(str).isin(set(gene_vocab)) == False
 print("done", flush=True)

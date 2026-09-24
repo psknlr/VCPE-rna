@@ -1,5 +1,7 @@
 # VCPE-rna P2.3-B Result Report (2026-09-02)
 
+> **⚠️ Numbers in this report are withdrawn; the architectural conclusion is not.** The finding that a per-gene direct head restores conditioning stands. But `pearson_dev = 0.3079` was a maximum over epochs on the test split (E3), the ablation varied two factors at once whenever the RNA axis was enabled (E7), and unmeasured panel columns entered the metric unmasked (E6). See [../ERRATA.md](../ERRATA.md).
+
 ## One-line conclusion
 
 **Conditioning revived; G2''' (pearson_dev ≥ 0.30) passed** — a GEARS-style per-gene residual head

@@ -350,8 +350,22 @@ record and must not be cited.
 | k | `diag_fc.py:200-225` | printed `(real vs zeroPert r)` while `pred_fc` held the **swapPert** output; the conclusion direction is unaffected but the label is wrong |
 | l | `gate_cache_self_fc.py:39-41` | HPA TSV path hard-coded to a directory outside the repository, with no override and no existence check |
 
-*Status:* a–i fixed; j fixed (grouped nested CV, early stopping, and a producer
-script for the artifact); k and l outstanding.
+*Status:* all fixed. (j: grouped nested CV, early stopping and a producer script
+for the artifact. k: both `r(real, zeroPert)` and `r(real, swapPert)` are now
+computed and printed separately, and the default probe count was raised from
+8 test + 4 train. l: resolved via `--hpa_tsv` / `$VCPE_HPA_TSV` / an in-repo
+default, with an actionable error and a quote-tolerant header parser.)
+
+A thirteenth item, `eval_headtohead.py`, was repaired rather than deleted but
+**its numbers remain uninterpretable by construction**: the XGBoost encodes the
+target gene as a one-hot over genes with ≥100 training rows, so on the
+gene-holdout slice it has zero gene information while the transformer has an
+ESM2 embedding — and on the patent-group slice the transformer checkpoint was
+selected on that very slice (E3). The two biases run in opposite directions.
+The script now says so at the top, and the dose-duplication bug (the missing
+flag carried a copy of the dose) and the stale `build_split` signature were
+fixed. It still requires a private package via `$RNA_ROBOT_HOME` and no result
+file for it has ever been committed.
 
 ---
 

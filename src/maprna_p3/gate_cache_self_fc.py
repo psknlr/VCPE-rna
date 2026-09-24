@@ -26,6 +26,7 @@
 """
 import argparse
 import gzip
+import os
 import json
 import shutil
 from pathlib import Path
@@ -36,9 +37,14 @@ import numpy as np
 FLOOR = 0.7                 # panel 表达门控阈值（log1p CP10K）
 FLAG_NEAR_ZERO = 0.1        # UI 警示阈值：仅近零表达才亮"低表达语境"徽章（分布校准后）
 MISMATCH_GATE = 0.15        # Tissue-enriched × 谱系不匹配时的压制系数
-HPA_TSV = (Path(__file__).resolve().parents[4]
-           / "rna_platform" / "bio_literature" / "bundles"
-           / "protein_atlas" / "proteinatlas.tsv")
+# Human Protein Atlas TSV. Previously hard-coded to `parents[4]/rna_platform/...`
+# -- a directory OUTSIDE this repository, on the author's machine, with no CLI
+# override and no existence check, so this script raised FileNotFoundError for
+# every other user. Resolution order is now: --hpa_tsv, then $VCPE_HPA_TSV, then
+# data/protein_atlas/proteinatlas.tsv inside the repo. Download it from
+# https://www.proteinatlas.org/about/download (proteinatlas.tsv.zip).
+DEFAULT_HPA_TSV = (Path(__file__).resolve().parents[2]
+                   / "data" / "protein_atlas" / "proteinatlas.tsv")
 
 # 语境谱系关键词（HPA 组织名子串匹配）
 CONTEXT_LINEAGE = {
@@ -68,14 +74,41 @@ def load_panel_expr(h5ad_fp):
     return dict(zip(genes, map(float, expr)))
 
 
-def load_hpa_tissue_enriched():
-    """Protein Atlas：Tissue enriched 基因 -> 富集组织列表（仅不匹配时需要）。"""
+def resolve_hpa_tsv(explicit=None):
+    """Locate the HPA TSV, or fail with an actionable message."""
+    for cand in (explicit, os.environ.get("VCPE_HPA_TSV"), DEFAULT_HPA_TSV):
+        if cand and Path(cand).is_file():
+            return Path(cand)
+    raise FileNotFoundError(
+        "Human Protein Atlas TSV not found. Pass --hpa_tsv, set $VCPE_HPA_TSV, "
+        f"or place proteinatlas.tsv at {DEFAULT_HPA_TSV}. Download it from "
+        "https://www.proteinatlas.org/about/download (proteinatlas.tsv.zip).")
+
+
+def _column_index(header, name):
+    """Match a column whether or not the export quotes its header.
+
+    The released HPA TSV quotes multi-word headers, and this parser used to look
+    up the literal string '"RNA tissue specificity"' including the quote
+    characters, which breaks the moment the export style changes.
+    """
+    for i, h in enumerate(header):
+        if h.strip().strip('"') == name:
+            return i
+    raise KeyError(
+        f"column {name!r} not found in the HPA TSV header; got "
+        f"{[h.strip().strip(chr(34)) for h in header][:8]}...")
+
+
+def load_hpa_tissue_enriched(hpa_tsv=None):
+    """Protein Atlas: tissue-enriched gene -> list of enriched tissues."""
     out = {}
-    with open(HPA_TSV, encoding="utf-8") as f:
+    path = resolve_hpa_tsv(hpa_tsv)
+    with open(path, encoding="utf-8") as f:
         header = f.readline().rstrip("\n").split("\t")
-        i_gene = header.index("Gene")
-        i_spec = header.index('"RNA tissue specificity"')
-        i_ntpm = header.index('"RNA tissue specific nTPM"')
+        i_gene = _column_index(header, "Gene")
+        i_spec = _column_index(header, "RNA tissue specificity")
+        i_ntpm = _column_index(header, "RNA tissue specific nTPM")
         for line in f:
             parts = line.rstrip("\n").split("\t")
             if len(parts) <= i_ntpm:
@@ -100,7 +133,7 @@ def lineage_gate(gene, hpa, lineage_kw):
     return MISMATCH_GATE, "off-panel/lineage-mismatch"
 
 
-def gate_cache(cache_fp, expr_h5ad, context, apply=False):
+def gate_cache(cache_fp, expr_h5ad, context, apply=False, hpa_tsv=None):
     cache_fp = Path(cache_fp)
     with gzip.open(cache_fp, "rt", encoding="utf-8") as f:
         cache = json.load(f)
@@ -110,7 +143,7 @@ def gate_cache(cache_fp, expr_h5ad, context, apply=False):
     print(f"[expr] loading ctrl pseudobulk from {Path(expr_h5ad).name} ...")
     panel_expr = load_panel_expr(expr_h5ad)
     print(f"[expr] panel genes with ctrl mean: {len(panel_expr)}")
-    hpa = load_hpa_tissue_enriched()
+    hpa = load_hpa_tissue_enriched(hpa_tsv)
     print(f"[hpa]  tissue-enriched genes: {len(hpa)}")
 
     report = {"panel_gated": [], "lineage_gated": [], "unchanged_self": 0}
@@ -212,5 +245,10 @@ if __name__ == "__main__":
     p.add_argument("--expr_h5ad", required=True)
     p.add_argument("--context", required=True, choices=list(CONTEXT_LINEAGE))
     p.add_argument("--apply", action="store_true")
+    p.add_argument("--hpa_tsv", default=None,
+                   help="Human Protein Atlas proteinatlas.tsv; "
+                        "defaults to $VCPE_HPA_TSV then "
+                        "data/protein_atlas/proteinatlas.tsv")
     args = p.parse_args()
-    gate_cache(args.cache, args.expr_h5ad, args.context, apply=args.apply)
+    gate_cache(args.cache, args.expr_h5ad, args.context, apply=args.apply,
+               hpa_tsv=args.hpa_tsv)

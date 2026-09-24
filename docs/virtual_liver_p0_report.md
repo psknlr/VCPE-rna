@@ -1,5 +1,7 @@
 # Virtual Liver P0 Report: Data Audit & Exam Design
 
+> **Note.** The negative results in this report stand — they were pre-registered and reported as failures. The hepatocyte-layer predictions it scores came from a checkpoint selected on its own test split (E3), so the baseline it establishes is, if anything, optimistic. See [ERRATA.md](ERRATA.md).
+
 Date: 2026-09-07 | Status: **P0 complete; conclusion = conditional GO for P1 (with one mandatory
 prerequisite task)**
 
