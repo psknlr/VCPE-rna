@@ -93,16 +93,23 @@ reported in the README.
 
 **Severity: all pre-v4 headline numbers are optimistically biased.**
 
-Three scripts selected the reported epoch using the very data they then
-reported:
+Four scripts — including the main response line — selected the reported epoch
+using the very data they then reported:
 
 | file | line | what it did |
 |---|---|---|
+| `train_p3.py` | 351 | saved the checkpoint on the best **test-split** `pearson_dev`, and re-scored the test split every epoch |
 | `train_efficacy_v2.py` | 203 | `best = max(best, m["spearman"])` where `m` is the held-out fold |
 | `train_sirna_v1.py` | 105–106 | kept the best test-fold epoch **and its predictions**, then pooled those |
 | `train_efficacy.py` | 195 | saved the checkpoint on `val_group`, then reported `val_group` |
 
-None of the three carved out an inner validation split.
+None of the four carved out an inner validation split. For `train_p3.py` this
+means every published `pearson_dev` — including the 0.3079 that cleared the
+G2''' gate "by a hair" — is a maximum over epochs rather than an estimate;
+`results/p3_v21e/train_log.jsonl` shows the per-epoch value oscillating between
+0.153 and 0.276 across 40 epochs, so the gap is not negligible. The per-epoch
+conditioning ablation also read the test split and has been moved to the inner
+split.
 
 Arithmetic confirmation for the ASO line (recomputed from the committed JSON):
 
@@ -120,7 +127,8 @@ from best-epoch predictions.
 
 *Status:* fixed — every script now selects on a grouped inner split of the
 training data and touches the held-out set exactly once. **Published v1 (0.50),
-v2.5 (0.267) and siRNA CV (0.607 / 0.6387) figures are withdrawn.**
+v2.5 (0.267), siRNA CV (0.607 / 0.6387) and all P3 `pearson_dev` figures are
+withdrawn.**
 
 ---
 
@@ -372,10 +380,15 @@ script for the artifact); k and l outstanding.
 
 Ordered by what most constrains any claim the project can make:
 
-1. Run real external baselines — GEARS, plus ridge and a k-nearest-neighbour-on-ESM2
-   control for the response head; OligoAI/ASOptimizer/OligoWalk for the ASO head.
-   Without the cheap controls in particular, it is not established that a 5.7M-parameter
-   head beats nearest-neighbour retrieval over ESM2.
+1. Run real external baselines. The **cheap controls are now implemented**
+   (`src/maprna_p3/baselines.py`: predict-no-change, train-mean,
+   k-nearest-neighbour over frozen ESM2, and closed-form ridge) and
+   `train_p3.py` reports them beside the model on the same split, the same mask
+   and the same metrics, printing a warning when the learned head fails to beat
+   one. They have **not yet been run on real data**, so it remains unestablished
+   that a 5.7M-parameter conditioned head beats nearest-neighbour retrieval over
+   the embeddings it is conditioned on. Running GEARS, and
+   OligoAI/ASOptimizer/OligoWalk for the ASO head, is still outstanding.
 2. Re-run every reported number under the corrected protocol and replace the
    withdrawn figures.
 3. Quantify E6 on real data (masked vs unmasked, same checkpoint).
