@@ -52,6 +52,13 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight_decay", type=float, default=1e-2)
     p.add_argument("--test_frac", type=float, default=0.15)
+    p.add_argument("--split_by", type=str, default="target_gene",
+                   choices=["target_gene", "pert"],
+                   help="target_gene (default): hold out whole target genes, so a "
+                        "test perturbation is genuinely unseen. pert: the pre-v4 "
+                        "(dataset, condition) split, which lets the same gene appear "
+                        "in both splits via the genome-wide screen -- kept only for "
+                        "reproducing historical numbers.")
     p.add_argument("--min_cells", type=int, default=3)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--d_model", type=int, default=256)
@@ -95,13 +102,53 @@ def build_dev_data(args):
             items.append((di, cond))
     rng = np.random.default_rng(args.seed)
     items = sorted(items)
-    rng.shuffle(items)
-    n_test = max(1, int(round(len(items) * args.test_frac)))
-    test_items, train_items = sorted(items[:n_test]), sorted(items[n_test:])
+    if args.split_by == "target_gene":
+        # Group by the ESM2 row the condition resolves to, i.e. by target gene,
+        # so that no target gene appears on both sides of the split.
+        #
+        # Why this matters: the expanded training set includes Replogle gwps, a
+        # genome-wide K562 screen that covers essentially every target gene in
+        # the legacy adamson/norman/replogle_ess datasets. Splitting on
+        # (dataset, condition) pairs -- the pre-v4 behaviour, still available as
+        # --split_by pert -- therefore lets the SAME target gene sit in train
+        # (via gwps) and in test (via a legacy dataset). Since a perturbation is
+        # represented to the model only by (pert_row, rna_emb), such a test item
+        # is not unseen. Any "unseen perturbation" claim requires split_by
+        # target_gene.
+        by_gene = {}
+        for di, cond in items:
+            by_gene.setdefault(resolve_pert_row(sym2row, cond), []).append((di, cond))
+        genes = sorted(by_gene)
+        rng.shuffle(genes)
+        n_test_g = max(1, int(round(len(genes) * args.test_frac)))
+        test_genes = set(genes[:n_test_g])
+        test_items = sorted(it for g in test_genes for it in by_gene[g])
+        train_items = sorted(it for g in genes[n_test_g:] for it in by_gene[g])
+        print(f"[split] by target_gene: {len(genes)} genes -> "
+              f"train {len(train_items)} items / test {len(test_items)} items "
+              f"({n_test_g} held-out genes)", flush=True)
+    else:
+        rng.shuffle(items)
+        n_test = max(1, int(round(len(items) * args.test_frac)))
+        test_items, train_items = sorted(items[:n_test]), sorted(items[n_test:])
+        overlap = (set(resolve_pert_row(sym2row, c) for _, c in train_items)
+                   & set(resolve_pert_row(sym2row, c) for _, c in test_items))
+        print(f"[split] by (dataset, condition): train {len(train_items)} / "
+              f"test {len(test_items)} | WARNING: {len(overlap)} target genes "
+              f"appear in BOTH splits -- results are not an unseen-gene estimate; "
+              f"use --split_by target_gene for that.", flush=True)
 
-    # targets: deterministic pert-mean over HVG
+    # targets: deterministic pert-mean over HVG.
+    # `measured` marks HVG columns actually present in that item's dataset panel.
+    # Unmeasured columns stay 0, which makes fc == 0 and dev == -common_fc,
+    # a value that is constant across every perturbation of the dataset and
+    # carries no perturbation-specific signal. Pre-v4 those columns entered the
+    # loss and every metric unmasked, so a model could score on them using
+    # ds_emb + ctrl_feat alone -- the same shared-component inflation the P2
+    # erratum documented, one level down.
     def targets_of(split_items):
         T = np.zeros((len(split_items), len(hvg_rows)), dtype=np.float32)
+        M = np.zeros((len(split_items), len(hvg_rows)), dtype=bool)
         rows_p = np.zeros(len(split_items), dtype=np.int64)
         for k, (di, cond) in enumerate(split_items):
             cp = kd["pert_labels"][di]
@@ -112,11 +159,15 @@ def build_dev_data(args):
                 c = row2col.get(int(hr))
                 if c is not None:
                     T[k, hi] = mean[c]
+                    M[k, hi] = True
             rows_p[k] = resolve_pert_row(sym2row, cond)
-        return T, rows_p
+        return T, rows_p, M
 
-    T_tr, rows_tr = targets_of(train_items)
-    T_te, rows_te = targets_of(test_items)
+    T_tr, rows_tr, mask_tr = targets_of(train_items)
+    T_te, rows_te, mask_te = targets_of(test_items)
+    print(f"[mask] measured HVG fraction: train {mask_tr.mean():.3f} "
+          f"test {mask_te.mean():.3f} (unmeasured columns are excluded from "
+          f"loss and metrics)", flush=True)
 
     # V2-1a: 靶基因自身 ctrl 表达（raw log1p，供 self-response 门控）。
     # 目标基因在所属数据集 panel 内 -> 取该列 ctrl 均值；panel 外 -> 0.0
@@ -140,19 +191,27 @@ def build_dev_data(args):
           f"| near-zero(<0.1) train {int((pert_expr_tr < 0.1).sum())}/{len(pert_expr_tr)}",
           flush=True)
 
-    # full fc and residual targets (train-only common core)
+    # full fc and residual targets (train-only common core).
+    # The common core is a MASKED mean: averaging raw zeros from unmeasured
+    # columns would shrink it toward zero on exactly those genes that are
+    # panel-specific, distorting the residual everywhere downstream.
     fc_tr = T_tr - ctrl_mean[np.array([di for di, _ in train_items])]
     fc_te = T_te - ctrl_mean[np.array([di for di, _ in test_items])]
-    common_fc = fc_tr.mean(axis=0)
+    denom = mask_tr.sum(axis=0)
+    common_fc = np.where(denom > 0, (fc_tr * mask_tr).sum(axis=0) / np.maximum(denom, 1), 0.0)
+    common_fc = common_fc.astype(np.float32)
     dev_tr, dev_te = fc_tr - common_fc, fc_te - common_fc
-    print(f"[P2.3-B] common fc (train-only): std={common_fc.std():.4f} "
-          f"max|.|={np.abs(common_fc).max():.4f}", flush=True)
+    n_never = int((denom == 0).sum())
+    print(f"[P2.3-B] common fc (train-only, masked): std={common_fc.std():.4f} "
+          f"max|.|={np.abs(common_fc).max():.4f} | HVG columns never measured in "
+          f"train: {n_never}/{len(hvg_rows)}", flush=True)
 
     return dict(sym2row=sym2row, esm_dim=esm_dim, hvg_rows=hvg_rows,
                 ctrl_feat_all=ctrl_feat_all, train_items=train_items,
                 test_items=test_items, rows_tr=rows_tr, rows_te=rows_te,
                 pert_expr_tr=pert_expr_tr, pert_expr_te=pert_expr_te,
                 fc_tr=fc_tr, fc_te=fc_te, dev_tr=dev_tr, dev_te=dev_te,
+                mask_tr=mask_tr, mask_te=mask_te,
                 common_fc=common_fc, n_ds=len(kd["X_ctrl"]))
 
 
@@ -223,28 +282,52 @@ def evaluate(model, data, split, device, esm_override_mode=None):
         ov = model.esm_table[pr[perm]]
         pred_dev = _predict_chunks(pr, ds_idx, cf, rna, pe, ov=ov)
 
+    # Restrict every metric to HVG columns actually measured in that item's
+    # dataset panel. Unmeasured columns have dev == -common_fc identically for
+    # every perturbation of the dataset, so scoring them rewards predicting a
+    # dataset-level constant and inflates the per-perturbation correlations.
+    mask = data["mask_te"] if split == "test" else data["mask_tr"]
+
     pred_fc = pred_dev + data["common_fc"]
     out = {}
-    mse = np.mean((pred_fc - fc) ** 2, axis=1)
-    out["mse_DE"] = float(mse.mean())
-    out["mse_DE_baseline_ctrl"] = float(np.mean((fc) ** 2))
-    prs, tops = [], []
-    for b in range(len(fc)):
-        t, p = fc[b], pred_fc[b]
-        prs.append(float(np.corrcoef(t, p)[0, 1]) if t.std() > 1e-6 and p.std() > 1e-6 else 0.0)
-        k = 50
-        tops.append(len(set(np.argsort(-np.abs(t))[:k]) & set(np.argsort(-np.abs(p))[:k])) / k)
-    out["pearson_delta"], out["top50_deg_overlap"] = float(np.mean(prs)), float(np.mean(tops))
+    out["measured_fraction"] = float(mask.mean())
+
+    def _masked_mse(pred, true):
+        d2 = ((pred - true) ** 2) * mask
+        denom = np.maximum(mask.sum(axis=1), 1)
+        return float((d2.sum(axis=1) / denom).mean())
+
+    def _per_item(pred, true, k=50):
+        """Per-perturbation Pearson and top-k overlap over measured columns only."""
+        prs, tops = [], []
+        for b in range(len(true)):
+            m = mask[b]
+            if m.sum() < 10:
+                continue
+            t, p = true[b][m], pred[b][m]
+            if t.std() > 1e-6 and p.std() > 1e-6:
+                prs.append(float(np.corrcoef(t, p)[0, 1]))
+            else:
+                prs.append(0.0)
+            kk = min(k, len(t))
+            tops.append(len(set(np.argsort(-np.abs(t))[:kk])
+                            & set(np.argsort(-np.abs(p))[:kk])) / kk)
+        if not prs:
+            return float("nan"), float("nan"), 0
+        return float(np.mean(prs)), float(np.mean(tops)), len(prs)
+
+    out["mse_DE"] = _masked_mse(pred_fc, fc)
+    out["mse_DE_baseline_ctrl"] = _masked_mse(np.zeros_like(fc), fc)
+    out["pearson_delta"], out["top50_deg_overlap"], _ = _per_item(pred_fc, fc)
     # dev metrics
-    mse_d = np.mean((pred_dev - dev) ** 2, axis=1)
-    out["mse_dev"] = float(mse_d.mean())
-    prd, topd = [], []
-    for b in range(len(dev)):
-        t, p = dev[b], pred_dev[b]
-        prd.append(float(np.corrcoef(t, p)[0, 1]) if t.std() > 1e-6 and p.std() > 1e-6 else 0.0)
-        k = 50
-        topd.append(len(set(np.argsort(-np.abs(t))[:k]) & set(np.argsort(-np.abs(p))[:k])) / k)
-    out["pearson_dev"], out["top50_dev"] = float(np.mean(prd)), float(np.mean(topd))
+    out["mse_dev"] = _masked_mse(pred_dev, dev)
+    pd_, td_, n_scored = _per_item(pred_dev, dev)
+    out["pearson_dev"], out["top50_dev"] = pd_, td_
+    out["n_scored_perturbations"] = n_scored
+    # Estimator label, so that this number is never silently compared against
+    # eval_fair.py's flattened pooled correlation -- they are different
+    # estimators and differ by ~1.5x on the same checkpoint.
+    out["pearson_dev_estimator"] = "mean_over_perturbations_of_within_perturbation_r"
     return out
 
 
@@ -288,6 +371,10 @@ def main():
                             lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     dev_tr_t = torch.from_numpy(data["dev_tr"]).float().to(device)
+    # Same masking rationale as in evaluate(): unmeasured HVG columns carry a
+    # dataset-level constant target and no perturbation-specific signal, so
+    # training on them teaches the model to reproduce that constant.
+    mask_tr_t = torch.from_numpy(data["mask_tr"]).float().to(device)
     ds_tr = torch.tensor([di for di, _ in data["train_items"]], dtype=torch.long)
     rows_tr = torch.tensor(data["rows_tr"], dtype=torch.long)
     cf_tr = torch.from_numpy(data["ctrl_feat_all"][ds_tr.numpy()]).float().to(device)
@@ -307,7 +394,8 @@ def main():
             pred = model(rows_tr[idx], ds_tr[idx], cf_tr[idx],
                          rna_emb=rna_tr[idx] if rna_tr is not None else None,
                          pert_ctrl_expr=pe_tr[idx])
-            loss = nn.functional.mse_loss(pred, dev_tr_t[idx])
+            m = mask_tr_t[idx]
+            loss = (((pred - dev_tr_t[idx]) ** 2) * m).sum() / m.sum().clamp(min=1.0)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -330,15 +418,30 @@ def main():
             ov_all = torch.zeros_like(model.esm_table[rows_t])
 
             def _abl_chunks(chunk=128):
+                """Single-factor ablation: ONLY the target-gene ESM2 vector changes.
+
+                Pre-v4 this passed `rna_emb` to the ablated branch but not to the
+                real one, so it compared "no RNA axis + true ESM2" against
+                "RNA axis + zeroed ESM2" -- two factors at once, and neither
+                branch matched the configuration used by evaluate(). Every
+                ablation_r logged by a run with the RNA axis enabled (including
+                results/p3_v21e/train_log.jsonl) is affected.
+
+                Note the remaining caveat: zeroing the ESM2 vector does not
+                remove perturbation identity, because is_target / is_neighbor
+                still encode it. Use --ablation_mode to isolate those axes.
+                """
                 reals, zeros = [], []
                 for lo in range(0, rows_t.shape[0], chunk):
                     hi = lo + chunk
-                    kw = dict(rna_emb=rna_t[lo:hi] if rna_t is not None else None,
-                              pert_esm_override=ov_all[lo:hi])
+                    rna_chunk = rna_t[lo:hi] if rna_t is not None else None
                     reals.append(model(rows_t[lo:hi], ds_t[lo:hi], cf_t[lo:hi],
+                                       rna_emb=rna_chunk,
                                        pert_ctrl_expr=pe_t[lo:hi]).cpu())
                     zeros.append(model(rows_t[lo:hi], ds_t[lo:hi], cf_t[lo:hi],
-                                       pert_ctrl_expr=pe_t[lo:hi], **kw).cpu())
+                                       rna_emb=rna_chunk,
+                                       pert_esm_override=ov_all[lo:hi],
+                                       pert_ctrl_expr=pe_t[lo:hi]).cpu())
                 return torch.cat(reals).numpy().ravel(), torch.cat(zeros).numpy().ravel()
 
             p_real, p_zero = _abl_chunks()

@@ -39,7 +39,7 @@ for _sib in ("maprna_p1", "maprna_p2", "maprna_p3"):
         sys.path.insert(0, _p)
 
 from ds_knockdown import load_kd_datasets, build_symbol2row, resolve_pert_row  # noqa: E402
-from model_dev import DeviationModel, load_esm_matrix  # noqa: E402
+from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
 
 
 def build_model(args, device):
@@ -60,7 +60,7 @@ def build_model(args, device):
     model = DeviationModel(esm, hvg_rows, n_ds=n_ds, rna_encoder=rna_enc).to(device).eval()
     if args.string_neighbors and os.path.exists(args.string_neighbors):
         model.set_neighbor_table(np.load(args.string_neighbors), device)
-    model.load_state_dict(ck["model_state_dict"])
+    load_dev_state(model, ck)
     syms = [sym_by_row.get(int(r)) for r in hvg_rows]
     return ck, n_ds, hvg_rows, common_fc, sym2row, sym_by_row, model, syms
 

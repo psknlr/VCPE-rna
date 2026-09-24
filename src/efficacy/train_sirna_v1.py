@@ -80,34 +80,86 @@ def metrics(y, p):
     return dict(spearman=float(rho), pearson=float(pr))
 
 
-def run_fold(k, tr, te, X, P, Y, T, dev, epochs=60, bs=256, lr=1e-3):
+def bootstrap_ci(y, p, n_boot=2000, alpha=0.05, seed=0):
+    rng = np.random.default_rng(seed)
+    n = len(y)
+    if n < 8:
+        return (float("nan"), float("nan"))
+    vals = []
+    for _ in range(n_boot):
+        i = rng.integers(0, n, n)
+        if np.std(y[i]) < 1e-12 or np.std(p[i]) < 1e-12:
+            continue
+        v = spearmanr(y[i], p[i]).statistic
+        if np.isfinite(v):
+            vals.append(v)
+    if not vals:
+        return (float("nan"), float("nan"))
+    return (float(np.quantile(vals, alpha / 2)), float(np.quantile(vals, 1 - alpha / 2)))
+
+
+def run_fold(k, tr, te, X, Y, T, targets, dev, epochs=60, bs=256, lr=1e-3,
+             inner_val_frac=0.2):
+    """Train on `tr`, select the epoch on a target-grouped inner split of `tr`,
+    then score `te` exactly once at the selected epoch.
+
+    The previous implementation tracked `best = max(best, spearman(te))` across
+    epochs and returned that epoch's predictions, i.e. it selected the model on
+    the very fold it reported. Every v1 siRNA CV number published from it
+    (pooled 0.607, per-fold-best mean 0.6387) carries that bias.
+    """
     torch.manual_seed(SEED + k)
+    # inner split by target, so no target spans inner-train / inner-val
+    tr_t = np.array([targets[i] for i in tr])
+    uniq = np.unique(tr_t)
+    g_rng = np.random.default_rng(SEED + 500 + k)
+    n_val = max(1, int(round(len(uniq) * inner_val_frac)))
+    val_t = set(uniq[g_rng.permutation(len(uniq))[:n_val]])
+    is_val = np.array([t in val_t for t in tr_t])
+    tr_in, tr_val = tr[~is_val], tr[is_val]
+
     model = SiRNANet(X["esm"], X["tgt_map"]).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-    y_mu, y_sd = Y[tr].mean(), Y[tr].std() + 1e-6
-    n = len(tr)
-    best, best_m = -1.0, None
+    y_mu, y_sd = Y[tr_in].mean(), Y[tr_in].std() + 1e-6
+    n = len(tr_in)
+    rng = np.random.default_rng(SEED + k)
+
+    @torch.no_grad()
+    def predict(sel):
+        model.eval()
+        return model(X["ids"][sel].to(dev), X["pad"][sel].to(dev),
+                     T[sel].to(dev)).cpu().numpy() * y_sd + y_mu
+
+    best_val, best_ep, best_state = -np.inf, -1, None
     for ep in range(epochs):
         model.train()
-        perm = np.random.permutation(n)
+        perm = rng.permutation(n)
         run = []
         for lo in range(0, n, bs):
             idx = torch.from_numpy(perm[lo:lo + bs])
-            out = model(X["ids"][tr][idx].to(dev), X["pad"][tr][idx].to(dev),
-                        T[tr][idx].to(dev))
-            loss = nn.functional.huber_loss(out, torch.from_numpy(((Y[tr][idx] - y_mu) / y_sd)).float().to(dev))
+            sel = tr_in[idx]
+            out = model(X["ids"][sel].to(dev), X["pad"][sel].to(dev), T[sel].to(dev))
+            loss = nn.functional.huber_loss(
+                out, torch.from_numpy(((Y[sel] - y_mu) / y_sd)).float().to(dev))
             opt.zero_grad(); loss.backward(); opt.step()
             run.append(loss.item())
-        model.eval()
-        with torch.no_grad():
-            p = model(X["ids"][te].to(dev), X["pad"][te].to(dev), T[te].to(dev)).cpu().numpy() * y_sd + y_mu
-        m = metrics(Y[te], p)
-        if m["spearman"] > best:
-            best, best_m = m["spearman"], (m, p)
+        v = metrics(Y[tr_val], predict(tr_val))["spearman"]
+        if v > best_val:
+            best_val, best_ep = v, ep + 1
+            best_state = {kk: vv.detach().cpu().clone()
+                          for kk, vv in model.state_dict().items()}
         if (ep + 1) % 20 == 0 or ep == 0:
-            print(f"  fold{k} ep{ep+1}: loss {np.mean(run):.3f} | spearman {m['spearman']:.4f} | "
-                  f"{time.time()-T0:.0f}s", flush=True)
-    return best, best_m
+            print(f"  fold{k} ep{ep+1}: loss {np.mean(run):.3f} | "
+                  f"inner-val spearman {v:.4f} | {time.time()-T0:.0f}s", flush=True)
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    p = predict(te)
+    m = metrics(Y[te], p)
+    m["spearman_ci95"] = list(bootstrap_ci(Y[te], p, seed=SEED + k))
+    m["selected_epoch"] = best_ep
+    m["inner_val_spearman_at_selection"] = float(best_val)
+    return m, p
 
 
 T0 = time.time()
@@ -127,12 +179,28 @@ def main():
     tab = torch.load(ESM, map_location="cpu", weights_only=False)
     sym2row = {s: i for i, s in enumerate(tab.keys())}
     esm_matrix = torch.stack(list(tab.values())).float()
-    tgt_rows = np.array([sym2row.get(t, sym2row.get(t + "1", 0)) for t in targets],
-                        dtype=np.int64)
-    print(f"targets mapped to ESM2: "
-          f"{sum(1 for t in targets[:1])}... "
-          f"({sum(1 for t in set(targets) if t in sym2row or t+'1' in sym2row)}/{df['targets'].nunique()})",
-          flush=True)
+
+    # Unmapped targets previously fell back to ESM row 0, silently handing the
+    # model some arbitrary real gene's embedding. Drop those rows instead, and
+    # say how many were dropped.
+    def lookup(t):
+        if t in sym2row:
+            return sym2row[t]
+        if t + "1" in sym2row:  # HGNC 2020 renames, e.g. AARS -> AARS1
+            return sym2row[t + "1"]
+        return -1
+    tgt_rows = np.array([lookup(t) for t in targets], dtype=np.int64)
+    keep = tgt_rows >= 0
+    n_drop = int((~keep).sum())
+    if n_drop:
+        dropped = sorted(set(targets[~keep]))
+        print(f"[esm] dropping {n_drop} rows with unmappable targets "
+              f"({len(dropped)} symbols: {dropped[:8]}{'...' if len(dropped) > 8 else ''})",
+              flush=True)
+    ids, pad, y, targets, tgt_rows = (ids[keep], pad[keep], y[keep],
+                                      targets[keep], tgt_rows[keep])
+    print(f"targets mapped to ESM2: {len(set(targets))}/{df['targets'].nunique()} "
+          f"| rows kept {len(y)}/{len(df)}", flush=True)
 
     X = dict(ids=torch.from_numpy(ids), pad=torch.from_numpy(pad),
              esm=esm_matrix, tgt_map={})
@@ -143,28 +211,46 @@ def main():
     uniq_t = sorted(set(targets))
     rng.shuffle(uniq_t)
     folds = np.array_split(np.arange(len(uniq_t)), 5)
-    bests, rhos = [], []
+    per_fold = {}
     all_true, all_pred = [], []
     for k, ft in enumerate(folds, 1):
         te_t = set(uniq_t[i] for i in ft)
         te = np.array([i for i, t in enumerate(targets) if t in te_t])
         tr = np.array([i for i, t in enumerate(targets) if t not in te_t])
-        best, (m, p) = run_fold(k, tr, te, X, None, y, T, dev)
-        bests.append(best)
-        rhos.append(m)
+        m, p = run_fold(k, tr, te, X, y, T, targets, dev)
+        per_fold[k] = dict(m, te_targets=len(te_t), n_te=int(len(te)))
         all_true.append(y[te]); all_pred.append(p)
-        print(f"fold{k}: BEST spearman = {best:.4f} | te_targets={len(te_t)} n_te={len(te)}",
+        print(f"fold{k}: TEST spearman = {m['spearman']:.4f} "
+              f"CI95 [{m['spearman_ci95'][0]:.4f}, {m['spearman_ci95'][1]:.4f}] "
+              f"(ep{m['selected_epoch']}) | te_targets={len(te_t)} n_te={len(te)}",
               flush=True)
-    pooled = metrics(np.concatenate(all_true), np.concatenate(all_pred))
-    per_t = []
-    tt = np.concatenate(all_true); pp = np.concatenate(all_pred)
-    summary = dict(model="sirna v1 (guide 21mer + ESM2 target axis, target-grouped 5-fold)",
-                   pooled=pooled, per_fold_best=bests,
-                   comparator="RNAGenesis Huesken benchmark (paper, Fig 3h)")
+    tt, pp = np.concatenate(all_true), np.concatenate(all_pred)
+    pooled = metrics(tt, pp)
+    pooled["spearman_ci95"] = list(bootstrap_ci(tt, pp, seed=SEED))
+    fold_rhos = [per_fold[k]["spearman"] for k in per_fold]
+    summary = dict(
+        model="sirna v1 (guide 21mer + ESM2 target axis, target-grouped 5-fold)",
+        protocol=("epoch selected on a target-grouped inner split of the training "
+                  "folds; each test fold scored once at the selected epoch"),
+        pooled=pooled,
+        per_fold=per_fold,
+        mean_of_fold_spearman=float(np.mean(fold_rhos)),
+        sd_of_fold_spearman=float(np.std(fold_rhos, ddof=1)),
+        comparator=dict(
+            note=("RNAGenesis reports a Huesken benchmark in its Fig 3h; no numeric "
+                  "value is reproduced in this repository and no shared split or "
+                  "preprocessing exists, so no 'matches/beats' claim is supported."),
+            RNAGenesis_Huesken="not reproduced here",
+        ),
+        errata=["v1 selected the reported epoch on each held-out fold and pooled "
+                "that epoch's predictions; the previously published pooled 0.607 "
+                "and per-fold-best mean 0.6387 are optimistically biased."],
+    )
     json.dump(summary, open(os.path.join(OUT, "cv_results.json"), "w"), indent=2)
-    print(f"\n✅ CV DONE in {time.time()-T0:.0f}s | mean best spearman "
-          f"{np.mean(bests):.4f} ± {np.std(bests):.4f} | pooled {pooled['spearman']:.4f}/"
-          f"{pooled['pearson']:.4f}", flush=True)
+    print(f"\n✅ CV DONE in {time.time()-T0:.0f}s | pooled spearman "
+          f"{pooled['spearman']:.4f} CI95 [{pooled['spearman_ci95'][0]:.4f}, "
+          f"{pooled['spearman_ci95'][1]:.4f}] | mean-of-folds "
+          f"{np.mean(fold_rhos):.4f} ± {np.std(fold_rhos, ddof=1):.4f}", flush=True)
 
 
 if __name__ == "__main__":

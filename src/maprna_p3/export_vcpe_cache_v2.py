@@ -30,7 +30,22 @@ for _sib in ("maprna_p1", "maprna_p2"):
         sys.path.insert(0, str(_p))
 
 from ds_knockdown import build_symbol2row, load_kd_datasets  # noqa: E402
-from model_dev import DeviationModel, load_esm_matrix  # noqa: E402
+from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
+
+# Maps --context_name to the ds_emb index it occupied in the TRAINING
+# --data_dirs ordering (same order as eval_fair.DS_NAMES). Override with
+# --ds_idx when a checkpoint was trained on a different ordering; there is no
+# way to recover the mapping from the checkpoint itself, so it is asserted here
+# rather than guessed.
+CONTEXT_DS_INDEX = {
+    "k562a": 0,      # adamson (K562)
+    "adamson": 0,
+    "norman": 1,
+    "replogle_ess": 2,
+    "gwps": 3,
+    "jurkat": 4,
+    "hepg2": 5,
+}
 
 
 def parse_args():
@@ -39,6 +54,10 @@ def parse_args():
                    help="adamson perturb_processed.h5ad (K562 control context)")
     p.add_argument("--ctrl_h5ad", type=str, default=None,
                    help="control-context h5ad; default = adamson_h5ad")
+    p.add_argument("--ds_idx", type=int, default=None,
+                   help="dataset index for the learned ds_emb. Defaults to the "
+                        "CONTEXT_DS_INDEX mapping; override when --data_dirs "
+                        "ordering at training time differed.")
     p.add_argument("--context_name", type=str, default="k562a",
                    help="k562a / k562g / jurkat / hepg2")
     p.add_argument("--esm_table", type=str, required=True)
@@ -185,7 +204,7 @@ def main():
     n_ds = int(ck["model_state_dict"]["ds_emb.weight"].shape[0])
     print(f"[ckpt] n_ds={n_ds} (derived from ds_emb.weight)", flush=True)
     model = DeviationModel(esm, hvg_rows, n_ds=n_ds, rna_encoder=rna_enc).to(device).eval()
-    model.load_state_dict(ck["model_state_dict"])
+    load_dev_state(model, ck)
     if args.string_neighbors and os.path.exists(args.string_neighbors):
         model.set_neighbor_table(np.load(args.string_neighbors), device)
         cov = int((model.neighbor_table >= 0).any(dim=1).sum())
@@ -210,7 +229,29 @@ def main():
 
     V = esm.shape[0]
     pred_dev = np.zeros((V, len(hvg_rows)), dtype=np.float32)
-    ds0 = torch.zeros(args.batch_genes, dtype=torch.long)
+    # Dataset-context index for the learned ds_emb. This MUST correspond to the
+    # context being exported: pre-v4 it was hard-coded to zero, so a cache built
+    # with --context_name hepg2 or jurkat was generated with the adamson/K562
+    # dataset embedding while the label said otherwise. --context_name only ever
+    # reached the metadata string.
+    if args.ds_idx is not None:
+        ds_index = int(args.ds_idx)
+    elif args.context_name in CONTEXT_DS_INDEX:
+        ds_index = CONTEXT_DS_INDEX[args.context_name]
+    else:
+        raise SystemExit(
+            f"--context_name '{args.context_name}' has no known dataset index. "
+            f"Known: {sorted(CONTEXT_DS_INDEX)}. Pass --ds_idx explicitly with the "
+            f"index this context had in the --data_dirs order used for TRAINING; "
+            f"an incorrect value silently exports the wrong context.")
+    if ds_index >= n_ds:
+        raise SystemExit(
+            f"ds_idx {ds_index} is out of range for this checkpoint (n_ds={n_ds}). "
+            f"The checkpoint was trained on fewer datasets than this context index "
+            f"implies.")
+    print(f"[ctx] context '{args.context_name}' -> ds_emb index {ds_index} "
+          f"(of n_ds={n_ds})", flush=True)
+    ds0 = torch.full((args.batch_genes,), ds_index, dtype=torch.long)
     cf = ctrl_feat.to(device)
     # v2-1a: 每个候选靶基因的 ctrl 表达（raw log1p，self-response 门控）。
     # 靶基因在语境 panel 内 -> 该列 ctrl 均值；panel 外 -> 0.0（近零，硬压，

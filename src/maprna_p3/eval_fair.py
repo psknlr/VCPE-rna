@@ -38,6 +38,12 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--min_cells", type=int, default=3)
     p.add_argument("--batch", type=int, default=128)
+    p.add_argument("--split_by", type=str, default="target_gene",
+                   choices=["target_gene", "pert"],
+                   help="MUST match the value used for training, otherwise the "
+                        "reconstructed test split is not the model's test split")
+    p.add_argument("--out_json", default="",
+                   help="optional path to write the stratified report as JSON")
     args = p.parse_args()
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,7 +91,11 @@ def main():
                            d_model=256, rna_encoder=rna_enc).to(dev).eval()
     if args.string_neighbors and os.path.exists(args.string_neighbors):
         model.set_neighbor_table(np.load(args.string_neighbors), dev)
-    model.load_state_dict(ck["model_state_dict"])
+    # Pre-v4 checkpoints persist the frozen ESM2 table (~405 MB of the 428 MB
+    # file). It is now a non-persistent buffer supplied at construction, so
+    # drop the stale copy rather than failing on an unexpected key.
+    _sd = {k: v for k, v in ck["model_state_dict"].items() if k != "esm_table"}
+    model.load_state_dict(_sd)
 
     items = data["test_items"]
     ds_idx = torch.tensor([di for di, _ in items], dtype=torch.long)
@@ -93,46 +103,100 @@ def main():
     cf = torch.from_numpy(data["ctrl_feat_all"][ds_idx.numpy()])
     rna = data["rna_embs"][len(data["train_items"]):] if model.proj_r is not None else None
     true_dev = data["dev_te"]
+    mask = data["mask_te"]
+    pe = torch.from_numpy(data["pert_expr_te"])
 
-    # chunked inference
+    # chunked inference.
+    # pert_ctrl_expr must be passed here: train_p3.evaluate() passes it, so
+    # omitting it (pre-v4 behaviour) silently evaluated a DIFFERENT model --
+    # the v2-1a self-response gate was active during training and scoring but
+    # inactive in this script.
     outs = []
     with torch.no_grad():
         for lo in range(0, pr.shape[0], args.batch):
             hi = min(lo + args.batch, pr.shape[0])
             kw = {"rna_emb": rna[lo:hi].to(dev)} if rna is not None else {}
             outs.append(model(pr[lo:hi].to(dev), ds_idx[lo:hi].to(dev),
-                              cf[lo:hi].to(dev), **kw).cpu().numpy())
+                              cf[lo:hi].to(dev), pert_ctrl_expr=pe[lo:hi].to(dev),
+                              **kw).cpu().numpy())
     pred_dev = np.concatenate(outs)
 
-    def pearson(a, b):
-        if a.std() < 1e-9 or b.std() < 1e-9:
+    # TWO ESTIMATORS, reported side by side and never subtracted from one another.
+    #
+    # `pooled` flattens the whole [n_pert, n_hvg] matrix into one correlation and
+    # therefore also rewards getting the relative response AMPLITUDE of different
+    # perturbations right. `per_pert` is the mean of within-perturbation
+    # correlations and is what train_p3.evaluate() reports.
+    #
+    # Pre-v4, this script printed only the pooled value under the bare name
+    # "pearson_dev", while train_p3 printed the per-perturbation value under the
+    # same name. The published "0.31 -> 0.71" improvement subtracts one from the
+    # other; on the same checkpoint they differ by roughly 1.5x, which is the
+    # "in-training 0.2076 vs eval_fair 0.3141" discrepancy recorded as an open
+    # backlog item in docs/reports/data_expansion_report.md.
+    def pooled(a, b, sel=None, m=None):
+        if sel is not None:
+            a, b, m = a[sel], b[sel], m[sel]
+        f = m.astype(bool)
+        x, y = a[f], b[f]
+        if x.size < 2 or x.std() < 1e-9 or y.std() < 1e-9:
             return float("nan")
-        return float(np.corrcoef(a.ravel(), b.ravel())[0, 1])
+        return float(np.corrcoef(x, y)[0, 1])
 
-    # overall
-    print(f"\nOVERALL: n={len(items)} pearson_dev={pearson(pred_dev, true_dev):.4f}", flush=True)
+    def per_pert(a, b, sel=None, m=None):
+        if sel is not None:
+            a, b, m = a[sel], b[sel], m[sel]
+        rs = []
+        for i in range(len(a)):
+            f = m[i].astype(bool)
+            if f.sum() < 10:
+                continue
+            x, y = a[i][f], b[i][f]
+            if x.std() > 1e-9 and y.std() > 1e-9:
+                rs.append(float(np.corrcoef(x, y)[0, 1]))
+        return float(np.mean(rs)) if rs else float("nan")
 
-    # stratify by source dataset
+    def line(label, sel=None):
+        n = len(items) if sel is None else int(sel.sum())
+        pp = per_pert(pred_dev, true_dev, sel, mask)
+        po = pooled(pred_dev, true_dev, sel, mask)
+        print(f"{label:34} n={n:5d}  pearson_dev_per_pert={pp:.4f}  "
+              f"pearson_dev_pooled={po:.4f}", flush=True)
+        return dict(n=n, pearson_dev_per_pert=pp, pearson_dev_pooled=po)
+
+    report = {}
+    print("\nEstimators: per_pert = mean of within-perturbation r (comparable to "
+          "train_p3.evaluate); pooled = one r over the flattened matrix. "
+          "They are NOT interchangeable.", flush=True)
+    print(f"Masked to measured HVG columns only (measured fraction "
+          f"{mask.mean():.3f}).\n", flush=True)
+    report["overall"] = line("OVERALL")
+
     print("\n--- stratified by source dataset (test split) ---", flush=True)
     for d in range(data["n_ds"]):
         sel = np.array([di == d for di, _ in items])
         if sel.sum() == 0:
             continue
         name = DS_NAMES[d] if d < len(DS_NAMES) else f"ds{d}"
-        print(f"{name:14} n={sel.sum():5d}  pearson_dev={pearson(pred_dev[sel], true_dev[sel]):.4f}",
-              flush=True)
+        report[name] = line(name, sel)
 
-    # legacy-domain subset (old three datasets)
-    legacy = np.array([di in (0, 1, 2) for di, _ in items])
-    print(f"\nLEGACY-DOMAIN (adamson/norman/replogle_ess test perts): "
-          f"n={legacy.sum()} pearson_dev={pearson(pred_dev[legacy], true_dev[legacy]):.4f}", flush=True)
-    print("(fair-comparison caveat: distribution-level vs old 0.3079 baseline — "
-          "same source domains, not the identical 276-pert set)", flush=True)
+    print("", flush=True)
+    report["legacy_domain"] = line(
+        "LEGACY-DOMAIN (adamson/norman/repl_ess)",
+        np.array([di in (0, 1, 2) for di, _ in items]))
+    report["new_domain"] = line(
+        "NEW-DOMAIN (gwps/jurkat/hepg2)",
+        np.array([di in (3, 4, 5) for di, _ in items]))
+    print("\nCaveat: this is a distribution-level comparison against the earlier "
+          "1,843-perturbation baseline, not the identical 276-perturbation test "
+          "set, and the HVG definition also changed between those runs. Compare "
+          "per_pert with per_pert only.", flush=True)
 
-    # gene-level signal: which domains does the model generalize to?
-    new_domains = np.array([di in (3, 4, 5) for di, _ in items])
-    print(f"NEW-DOMAIN (gwps/jurkat/hepg2 test perts): n={new_domains.sum()} "
-          f"pearson_dev={pearson(pred_dev[new_domains], true_dev[new_domains]):.4f}", flush=True)
+    if args.out_json:
+        with open(args.out_json, "w") as f:
+            json.dump(dict(report=report, measured_fraction=float(mask.mean()),
+                           split_by=getattr(args, "split_by", "unknown")), f, indent=2)
+        print(f"wrote {args.out_json}", flush=True)
 
 
 if __name__ == "__main__":

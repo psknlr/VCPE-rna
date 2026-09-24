@@ -56,7 +56,13 @@ class DeviationModel(nn.Module):
                  rna_encoder=None, rna_d_model=256, dropout=0.1):
         super().__init__()
         esm_matrix = esm_matrix.float()
-        self.register_buffer("esm_table", esm_matrix)          # [V, esm_dim] frozen
+        # persistent=False: the ESM2 table is a frozen copy of a public lookup
+        # table supplied at construction time. Persisting it wrote ~405 MB of
+        # redundant bytes into every checkpoint (the released 428 MB P3
+        # checkpoint is ~23 MB of parameters plus this table), and a stale copy
+        # inside a checkpoint can silently disagree with the table on disk.
+        # maprna_p1/model_kd.py already did this correctly.
+        self.register_buffer("esm_table", esm_matrix, persistent=False)  # [V, esm_dim]
         self.register_buffer("hvg_rows", torch.as_tensor(hvg_rows).long())
         self.esm_dim = esm_matrix.shape[1]
         self.n_hvg = len(hvg_rows)
@@ -138,3 +144,21 @@ class DeviationModel(nn.Module):
     def set_neighbor_table(self, table_np, device):
         import numpy as np
         self.neighbor_table = torch.from_numpy(np.asarray(table_np)).long().to(device)
+
+
+def load_dev_state(model, ck, strict=True):
+    """Load a DeviationModel state dict, tolerating pre-v4 checkpoints.
+
+    Checkpoints written before the `persistent=False` fix embed a full copy of
+    the frozen ESM2 table (~405 MB of a 428 MB file). The table is supplied at
+    construction time now, so a persisted copy is both redundant and a
+    correctness hazard -- it can disagree with the table the caller passed in.
+    Drop it and load the parameters only.
+    """
+    sd = ck["model_state_dict"] if "model_state_dict" in ck else ck
+    stale = [k for k in sd if k == "esm_table"]
+    sd = {k: v for k, v in sd.items() if k != "esm_table"}
+    if stale:
+        print("[model_dev] checkpoint carries a persisted esm_table; ignoring it "
+              "and using the table passed to the constructor.", flush=True)
+    return model.load_state_dict(sd, strict=strict)

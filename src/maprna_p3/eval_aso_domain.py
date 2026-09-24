@@ -39,7 +39,7 @@ for _sib in ("maprna_p1", "maprna_p2", "maprna_p3"):
         sys.path.insert(0, _p)
 
 from ds_knockdown import load_kd_datasets, build_symbol2row, resolve_pert_row  # noqa: E402
-from model_dev import DeviationModel, load_esm_matrix  # noqa: E402
+from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
 
 
 def load_ckpt(path, device):
@@ -75,7 +75,7 @@ def predict_actn1(ck, n_ds, data_dirs, donor_idx, args, sym2row, sym_by_row,
     model = DeviationModel(esm, hvg_rows, n_ds=n_ds, rna_encoder=rna_enc).to(device).eval()
     if args.string_neighbors and os.path.exists(args.string_neighbors):
         model.set_neighbor_table(np.load(args.string_neighbors), device)
-    model.load_state_dict(ck["model_state_dict"])
+    load_dev_state(model, ck)
 
     # ACTN1 rna emb：用 ckpt 内 fine-tuned 的 encoder（不是 Stage-A）
     symbol_map, ensembl_map = load_fasta_symbol_seqs(args.fasta)

@@ -1,0 +1,68 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  metrics:
+    # Metric-definition regression tests. Deliberately torch-free and data-free
+    # so they run in ~30s: they pin the evaluation defects recorded in
+    # docs/ERRATA.md so that those cannot silently return.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip numpy scipy pytest
+      - name: Run metric regression tests
+        run: python -m pytest tests/ -q
+
+  syntax:
+    # Every module must at least parse, and every name used at module scope must
+    # resolve to something imported or defined. py_compile alone does not catch
+    # a missing import (see ERRATA E12c), so both checks run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Byte-compile all sources
+        run: |
+          find src tests -name '*.py' -print0 | xargs -0 -n1 python -m py_compile
+      - name: Check for unresolved module-level names
+        run: |
+          python - <<'PY'
+          import ast, builtins, pathlib, sys
+          ALLOW = {"__file__", "__name__", "__doc__", "__package__", "__spec__"}
+          bad = []
+          for f in sorted(pathlib.Path(".").glob("src/**/*.py")):
+              tree = ast.parse(f.read_text())
+              defined = set(dir(builtins)) | ALLOW
+              for n in ast.walk(tree):
+                  if isinstance(n, (ast.Import, ast.ImportFrom)):
+                      for a in n.names:
+                          defined.add((a.asname or a.name).split(".")[0])
+                  elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                      defined.add(n.name)
+                  elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                      defined.add(n.id)
+                  elif isinstance(n, ast.arg):
+                      defined.add(n.arg)
+                  elif isinstance(n, ast.ExceptHandler) and n.name:
+                      defined.add(n.name)
+                  elif isinstance(n, ast.alias) and n.asname:
+                      defined.add(n.asname)
+              used = {n.id for n in ast.walk(tree)
+                      if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+              missing = sorted(used - defined)
+              if missing:
+                  bad.append((str(f), missing))
+          for f, m in bad:
+              print(f"UNRESOLVED {f}: {m}")
+          sys.exit(1 if bad else 0)
+          PY

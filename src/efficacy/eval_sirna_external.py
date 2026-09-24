@@ -88,7 +88,12 @@ def main():
     tr_df = pd.read_csv(TRAIN_CSV)
     te_df = pd.read_csv(TEST_CSV)
     n0 = len(te_df)
-    te_df = te_df[te_df["targets"].astype(str).str.len() > 0].copy()  # 去空靶点行
+    def _has_target(col):
+        s_ = col.astype(str).str.strip()
+        return col.notna() & (s_.str.len() > 0) & \
+            (~s_.str.lower().isin(["nan", "none", "na", "null", "-"]))
+    te_df = te_df[_has_target(te_df["targets"])].copy()
+    tr_df = tr_df[_has_target(tr_df["targets"])].copy()
     print(f"train: {len(tr_df)} rows / {tr_df['targets'].nunique()} targets | "
           f"test: {len(te_df)}/{n0} rows (dropped {n0-len(te_df)} empty-target) / "
           f"{te_df['targets'].nunique()} targets", flush=True)
@@ -97,23 +102,52 @@ def main():
     sym2row = {s: i for i, s in enumerate(tab.keys())}
     esm_matrix = torch.stack(list(tab.values())).float()
 
-    def build(df):
+    def lookup(t):
+        if t in sym2row:
+            return sym2row[t]
+        if t + "1" in sym2row:          # HGNC 2020 renames, e.g. AARS -> AARS1
+            return sym2row[t + "1"]
+        return -1
+
+    def build(df, name):
         guides = [parse_guide(f) for f in df["fasta"]]
         ids, pad = encode(guides)
         y = df["y"].values.astype(np.float32)
         targets = df["targets"].astype(str).values
-        rows = np.array([sym2row.get(t, sym2row.get(t + "1", 0)) for t in targets],
-                        dtype=np.int64)
-        return dict(ids=torch.from_numpy(ids), pad=torch.from_numpy(pad),
-                    y=y, targets=targets, rows=torch.from_numpy(rows))
+        seqs = np.array([str(g) for g in guides])
+        rows = np.array([lookup(t) for t in targets], dtype=np.int64)
+        keep = rows >= 0
+        n_drop = int((~keep).sum())
+        if n_drop:
+            # Previously these fell back to ESM row 0, i.e. some arbitrary real
+            # gene's embedding stood in for an unmappable target.
+            print(f"[esm/{name}] dropping {n_drop} rows with unmappable targets: "
+                  f"{sorted(set(targets[~keep]))}", flush=True)
+        return dict(ids=torch.from_numpy(ids[keep]), pad=torch.from_numpy(pad[keep]),
+                    y=y[keep], targets=targets[keep], seqs=seqs[keep],
+                    rows=torch.from_numpy(rows[keep]), n_dropped_unmappable=n_drop)
 
-    TR, TE = build(tr_df), build(te_df)
+    TR, TE = build(tr_df, "train"), build(te_df, "test")
+
+    # Explicit held-out check. The docstring asserted zero target overlap;
+    # nothing verified it, and the two files come from one literature family.
+    tgt_ov = sorted(set(TE["targets"]) & set(TR["targets"]))
+    seq_ov = sorted(set(TE["seqs"]) & set(TR["seqs"]))
+    n_te_seqs = len(set(TE["seqs"]))
+    print(f"[holdout-check] target overlap: {len(tgt_ov)} {tgt_ov[:10]} | "
+          f"exact guide-sequence overlap: {len(seq_ov)}/{n_te_seqs}", flush=True)
+    if tgt_ov or seq_ov:
+        print("[holdout-check] WARNING: this is no longer a clean external "
+              "evaluation -- overlapping targets/sequences must be removed or "
+              "reported alongside the headline number.", flush=True)
     covered = [t for t in set(TE["targets"]) if t in sym2row or t + "1" in sym2row]
     print(f"test targets mapped to ESM2: {len(covered)}/{len(set(TE['targets']))} "
           f"-> {sorted(covered)}", flush=True)
 
     # ---- 训练（全量 Huesken，同 v1 超参）----
     torch.manual_seed(SEED)
+    np.random.seed(SEED)
+    rng = np.random.default_rng(SEED)
     model = SiRNANet(esm_matrix).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
     y_mu, y_sd = TR["y"].mean(), TR["y"].std() + 1e-6
@@ -121,7 +155,7 @@ def main():
     tr_ids, tr_pad, tr_rows = TR["ids"].to(dev), TR["pad"].to(dev), TR["rows"].to(dev)
     for ep in range(EPOCHS):
         model.train()
-        perm = np.random.permutation(n)
+        perm = rng.permutation(n)
         for lo in range(0, n, BS):
             idx = torch.from_numpy(perm[lo:lo + BS])
             out = model(tr_ids[idx], tr_pad[idx], tr_rows[idx])
@@ -143,21 +177,47 @@ def main():
         p_te = model(TE["ids"].to(dev), TE["pad"].to(dev),
                      TE["rows"].to(dev)).cpu().numpy() * y_sd + y_mu
     pooled = metrics(TE["y"], p_te)
-    per_t = {}
+    rng_ci = np.random.default_rng(SEED)
+    boot = []
+    for _ in range(2000):
+        i = rng_ci.integers(0, len(TE["y"]), len(TE["y"]))
+        if np.std(TE["y"][i]) > 1e-12 and np.std(p_te[i]) > 1e-12:
+            v = spearmanr(TE["y"][i], p_te[i]).statistic
+            if np.isfinite(v):
+                boot.append(v)
+    pooled["spearman_ci95"] = [float(np.quantile(boot, 0.025)),
+                               float(np.quantile(boot, 0.975))] if boot else [float("nan")] * 2
+    per_t, per_t_n = {}, {}
     for t in sorted(set(TE["targets"])):
         m = np.array([i for i, x in enumerate(TE["targets"]) if x == t])
         per_t[t] = metrics(TE["y"][m], p_te[m])["spearman"]
+        per_t_n[t] = int(len(m))
     med_t = float(np.median([v for v in per_t.values() if np.isfinite(v)]))
 
     summary = {
         "model": "sirna v1 (Huesken full-train) -> external Takayuki/Ichihara_2007_2",
-        "train": {"rows": int(n), "targets": int(tr_df["targets"].nunique())},
-        "test": {"rows": int(len(TE["y"])), "dropped_empty_target": int(n0 - len(TE["y"])),
+        "protocol": ("fixed epoch budget, no test-based early stopping; the test set "
+                     "is scored exactly once. Hyperparameters are inherited from "
+                     "train_sirna_v1.py, whose pre-v4 tuning used test-fold epoch "
+                     "selection -- so this evaluation is held-out at the level of "
+                     "weights but not fully independent of the test data at the "
+                     "level of hyperparameter choice."),
+        "train": {"rows": int(n), "targets": int(tr_df["targets"].nunique()),
+                  "dropped_unmappable": int(TR["n_dropped_unmappable"])},
+        "test": {"rows": int(len(TE["y"])), "rows_in_file": int(n0),
+                 "dropped_missing_target": int(n0 - len(te_df)),
+                 "dropped_unmappable": int(TE["n_dropped_unmappable"]),
                  "targets": int(len(set(TE["targets"]))), "esm2_covered": len(covered)},
+        "holdout_check": {"target_overlap_with_train": tgt_ov,
+                          "n_exact_guide_sequence_overlap": len(seq_ov),
+                          "n_unique_test_guides": n_te_seqs},
         "pooled": pooled,
         "per_target_spearman": per_t,
+        "per_target_n": per_t_n,
         "per_target_median": med_t,
-        "internal_cv_reference": 0.6387,
+        "per_target_median_caveat": ("~35 rows per target gives a per-target "
+                                     "Spearman standard error of roughly +/-0.15; "
+                                     "read the median with that in mind."),
     }
     json.dump(summary, open(os.path.join(OUT, "external_ichihara2.json"), "w"),
               indent=2, ensure_ascii=False)
