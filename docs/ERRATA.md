@@ -406,6 +406,51 @@ at ~0.00 and lost to the k-nearest-neighbour control. On synthetic data that is
 not a result about biology — but under the pre-v4 protocol the same run would
 have reported the 0.57.
 
+## E13 — Defects found while translating the comments to English
+
+Translating a comment requires understanding what the code does, which is why
+this pass found things the audit had not. Each was verified independently before
+being recorded.
+
+**a. The `_proc` ingest file was never a subset (`ingest_gse293987.py`).**
+The mask was `(condition != "ctrl") | (control == 1)`. Both terms derive from
+`aso_class == "CONTROL"`, so `control == 1` holds for exactly the rows whose
+`condition == "ctrl"` and the two terms cover every row: the mask is identically
+True. `gse293987_proc.h5ad` has therefore always been byte-identical to
+`gse293987_full.h5ad`, `utc_ref` rows (UTC, OTHER and sub-threshold ACTN1)
+included, despite its name and docstring describing a filtered file. Confirmed by
+enumerating every `aso_class` x concentration class.
+*Status:* the row counts are now printed and a no-op subset warns explicitly;
+`--proc_drop_utc_ref` applies the intended filter. The default is left as the
+no-op so that a re-run reproduces the file downstream work already consumed —
+changing it silently would alter what an existing artifact name means.
+
+**b. `nearest_sim` is a Pearson correlation, reported as a cosine.**
+`train_cell_embedding.py` computes it with `np.corrcoef` between dataset
+embeddings, printed it as `emb cos=`, and stored it as `nearest_sim` in
+`results/loco_results.json` (0.9639). Cosine does not centre; Pearson does, and
+for these embeddings the two differ. The value is correct for what it measures —
+only the name was wrong, and that name is in a published result file.
+*Status:* relabelled in the code and named explicitly in the result file
+(`nearest_sim_metric`). The value is unchanged.
+
+**c. Two ingest docstrings described superseded behaviour.**
+`ingest_gse289964.py` claimed `condition = "Scarb1@{modification}{timepoint}"`
+over 12 conditions; the code writes `condition = "SCARB1"` for every ASO sample
+and puts the detailed label in `perturbation_raw`, and the distinct
+modification x timepoint combinations number 3 x 3 = 9, not 12 (48 = 12 x 4
+replicates is the total sample count, PBS included).
+`ingest_gse293987.py` claimed `condition = "ctrl"` covers UTC and CONTROL at all
+concentrations; the code assigns `"ctrl"` to CONTROL only, routing UTC, OTHER and
+sub-threshold ACTN1 to `"utc_ref"` — deliberately, per the comment above the
+assignment, so that transfection stress does not leak into the baseline.
+*Status:* both docstrings corrected to match the code, with the reason recorded.
+
+**d. The pre-registered LOCO gate criterion was written in Chinese.**
+`results/loco_results.json`'s `gate_rule` documents the threshold for one of the
+three negative results this project can stand behind. Translated; criterion and
+values unchanged.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically

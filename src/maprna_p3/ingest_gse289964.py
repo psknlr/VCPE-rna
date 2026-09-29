@@ -8,13 +8,13 @@ GEO series_matrix design table (fetched online, already verified):
   24h/72h/168h × 4 reps.
 
 Convention:
-  condition = "Scarb1@{modification}{timepoint}" (12 perturbation conditions,
-  4 reps each)
-      NOTE (this line does not match the code): the code writes
-      condition = "SCARB1" for every ASO sample and puts
-      "SCARB1@{mod}{timepoint}" into perturbation_raw instead (see the comment
-      in the obs-building loop). Also, the distinct modification × timepoint
-      combinations number 3 × 3 = 9, not 12.
+  condition = "SCARB1" for every ASO sample -- a single target, so that
+      load_kd_datasets sees one perturbation and pools the chemistries. The
+      detailed label "SCARB1@{modification}{timepoint}" goes in
+      perturbation_raw, where 3 modifications x 3 timepoints give 9 distinct
+      combinations (48 samples = 12 x 4 replicates, PBS included).
+      (Up to v4 this line claimed condition itself carried the detailed label
+      over "12 perturbation conditions"; neither matched the code.)
   control = 1 for PBS only (12 samples)
   X = CP10K + log1p (counts normalized directly)
   genes: mouse symbol -> human ortholog (MGI capitalize-first-letter

@@ -2,6 +2,7 @@
   "holdout": "hepg2",
   "nearest": "jurkat",
   "nearest_sim": 0.9638611695919506,
+  "nearest_sim_metric": "pearson_r_between_dataset_embeddings -- computed with np.corrcoef. Reported as 'emb cos' before v4, which was a mislabel: cosine does not centre, Pearson does. The value is unchanged.",
   "zero_shot_pearson_dev": 0.08118943574449851,
   "fallback_pearson_dev": 0.04727654566199707,
   "delta": 0.03391289008250144,

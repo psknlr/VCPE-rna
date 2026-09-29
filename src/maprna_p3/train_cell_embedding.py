@@ -379,7 +379,9 @@ def main():
         nearest, sim = max(sims, key=lambda x: x[1])
         nj = args.context_names.index(nearest)
         print(f"[loco] holdout {cd['name']} | nearest context: {nearest} "
-              f"(emb cos={sim:.2f})", flush=True)
+              f"(emb pearson_r={sim:.2f})", flush=True)   # np.corrcoef, NOT a cosine:
+              # cosine does not centre, Pearson does, and the two differ for
+              # these embeddings. The label said "cos" up to v4.
 
         # ground truth of the holdout items (same protocol)
         cp = kd["pert_labels"][holdout_di]
@@ -432,6 +434,7 @@ def main():
         zs, n_zs = eval_ctx("zero_shot")
         fb, _ = eval_ctx("fallback")
         results = dict(holdout=cd["name"], nearest=nearest, nearest_sim=sim,
+                       nearest_sim_metric="pearson_r_between_dataset_embeddings",
                        zero_shot_pearson_dev=zs, fallback_pearson_dev=fb,
                        delta=zs - fb, n_eval=n_zs, n_hvg=len(hvg_rows),
                        gate="PASS" if (zs - fb >= 0.02 and zs > 0.15) else "FAIL",

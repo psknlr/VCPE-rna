@@ -12,14 +12,18 @@ Antisense Oligonucleotide Selectivity"):
 Products (isomorphic to scPerturb, can go straight into load_kd_datasets /
 train_p3):
   gse293987_proc.h5ad -- X = log1p(CP10K), obs:
-      condition = "ACTN1" (concentration >= --min_uM, default 1.28) | "ctrl"
-                  (UTC + CONTROL at all concentrations)
-          NOTE (this line does not match the code): the code assigns "ctrl" to
-          the CONTROL ASO samples ONLY; UTC (and any OTHER class, and ACTN1
-          below --min_uM) get condition = "utc_ref" and stay out of the ctrl
-          pool. See the comment above the condition assignment, which states
-          that deliberately. Those "utc_ref" rows are also still present in
-          the proc file, so condition is not limited to {"ACTN1", "ctrl"}.
+      condition = "ACTN1"   (ACTN1 ASO at concentration >= --min_uM)
+                | "ctrl"    (CONTROL ASO only)
+                | "utc_ref" (UTC, OTHER, and ACTN1 below --min_uM)
+          UTC is deliberately kept OUT of the ctrl pool: an untreated sample
+          carries no transfection stress, so pooling it with the control ASO
+          would push that stress into the baseline and inflate every
+          fold-change. See the comment above the assignment.
+          Note that "utc_ref" rows are still present in the _proc file, so
+          condition is not limited to {"ACTN1", "ctrl"} -- see the _proc note
+          further down, and docs/ERRATA.md E13a.
+          (Up to v4 this line claimed "ctrl" covered UTC + CONTROL at all
+          concentrations, which the code has never done.)
       control   = 1 (ctrl rows)
       concentration_uM / sample_id / aso_class / cell_line = A431 /
       perturbation_type = ASO
@@ -134,6 +138,11 @@ def main():
     ap.add_argument("--min_uM", type=float, default=MIN_CONC_UM,
                     help="lowest concentration at which ACTN1 is admitted as "
                          "a perturbation condition (default 1.28)")
+    ap.add_argument("--proc_drop_utc_ref", action="store_true",
+                    help="make the _proc file an actual subset by dropping the "
+                         "'utc_ref' rows (UTC / OTHER / sub-threshold ACTN1). "
+                         "Off by default: the historical mask was a no-op, so "
+                         "the default reproduces the file downstream work used.")
     ap.add_argument("--out_prefix", default="gse293987")
     args = ap.parse_args()
 
@@ -265,14 +274,34 @@ def main():
     adata = ad.AnnData(X=X, obs=obs, var=pd.DataFrame(index=genes))
     full_fp = DIR / f"{args.out_prefix}_full.h5ad"
     adata.write_h5ad(full_fp)
-    # proc = a row subset of full (high-concentration ACTN1 + all ctrl), no
-    # concatenation needed.
-    # NOTE (this does not match the code below): the `keep` mask is
-    # (condition != "ctrl") | (control == 1), and control == 1 holds for exactly
-    # the rows whose condition == "ctrl", so the two terms cover every row and
-    # the mask is all-True. proc therefore ends up identical to full (it keeps
-    # the "utc_ref" rows as well), and the subsetting is a no-op.
-    keep = (adata.obs.condition != "ctrl") | (adata.obs.control == 1)
+    # proc: intended as a row subset of full (high-concentration ACTN1 + all
+    # ctrl). It has never actually been one.
+    #
+    # The historical mask is `(condition != "ctrl") | (control == 1)`. But
+    # `control == 1` holds for exactly the rows whose `condition == "ctrl"`
+    # (both derive from `aso_class == "CONTROL"` above), so the two terms cover
+    # every row and the mask is identically True. proc has therefore always been
+    # byte-identical to full, "utc_ref" rows included, and
+    # gse293987_proc.h5ad is not the filtered file its name and the docstring
+    # imply. Verified by enumerating every aso_class x concentration class.
+    #
+    # The default is left as the historical no-op so that re-running reproduces
+    # the file that downstream work already consumed; --proc_drop_utc_ref
+    # applies the filter that was intended. Either way the row counts are
+    # printed, so a no-op is visible rather than assumed.
+    if args.proc_drop_utc_ref:
+        keep = (adata.obs.condition == "ACTN1") | (adata.obs.control == 1)
+    else:
+        keep = (adata.obs.condition != "ctrl") | (adata.obs.control == 1)
+    n_keep = int(keep.values.sum())
+    if n_keep == adata.n_obs:
+        print(f"[warn] proc subset kept all {n_keep} rows: proc is identical to "
+              f"full. Pass --proc_drop_utc_ref to drop the {int((adata.obs.condition == 'utc_ref').sum())} "
+              f"'utc_ref' rows, which is what the subset was meant to do.",
+              flush=True)
+    else:
+        print(f"[proc] kept {n_keep}/{adata.n_obs} rows "
+              f"(dropped {adata.n_obs - n_keep} 'utc_ref')", flush=True)
     proc = adata[keep.values].copy()
     proc_fp = DIR / f"{args.out_prefix}_proc.h5ad"
     proc.write_h5ad(proc_fp)
