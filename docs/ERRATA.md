@@ -497,10 +497,43 @@ None of this is CPA's fault as science, but all of it is the real cost of the
 comparison, and it belongs in a methods section rather than being discovered by
 the next person. A reproduction must record **both** environments.
 
-*Status:* the three-stage structure and the venv preparation are implemented and
-the `export` stage is verified; the `run` stage awaits the isolated environment.
-Stage 3 shares `baseline_common` with every other baseline, so no baseline can
-drift into being scored differently -- which is E1/E2 one level up.
+Two further walls appeared after those four, and are also handled:
+
+5. `scvi-tools 0.20.3` imports `jaxlib.xla_extension.Device`. That module is gone,
+   and jaxlib older than 0.4.14 is no longer distributed for Python 3.10, so
+   pinning back is not possible. The class was **renamed**, not removed
+   (`jaxlib.xla_client.Device`), and scvi uses it only in type annotations, so the
+   real class is re-exported. Nothing is faked, and if the attribute cannot be
+   found the original ImportError is left in place rather than masked.
+6. The stack still uses `np.float_`, removed in NumPy 2.0, so numpy is pinned back.
+
+And one bug inside CPA itself:
+
+7. `setup_anndata` builds a perturbation-to-SMILES map **unconditionally** -- the
+   block runs whenever the class attribute is None, regardless of whether
+   `smiles_key` was passed -- so a gene-perturbation dataset fails with
+   `KeyError: None`. Pre-setting the map to empty skips it. That is the honest
+   workaround rather than inventing a SMILES column: `_model.py:111` shows the map
+   is consumed only under `use_rdkit_embeddings` (default False), so CPA uses its
+   learned per-perturbation embeddings, which is the right representation for gene
+   knockdowns. A placeholder SMILES string would make every perturbation
+   chemically identical if that path were ever switched on.
+
+Separately, a labelling mismatch that is a modelling question rather than an
+installation one: GEARS-format data writes a single-gene perturbation as
+`"GENE+ctrl"`, and CPA splits its perturbation key on `+` and counts every part.
+Passed through raw, CPA reads `"MYC+ctrl"` as a two-way combination of MYC with
+the control -- which produces ragged combination lengths and crashes in
+`np.vstack`, and would also misrepresent the experiment. The adapter strips the
+suffix so CPA sees one perturbed gene, and translates the split sets identically
+so the two cannot disagree.
+
+*Status:* **CPA runs.** All three stages verified end to end on synthetic data with
+real gene symbols: export in the VCPE environment, training and prediction in the
+isolated one, scoring back in the VCPE environment. Stage 3 shares
+`baseline_common` with every other baseline, so no baseline can drift into being
+scored differently -- which is E1/E2 one level up. Not yet run on real
+Perturb-seq data.
 
 ## What is not affected
 

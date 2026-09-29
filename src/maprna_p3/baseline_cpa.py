@@ -83,7 +83,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "maprna_p1"))
 #      making CPA unimportable without tkinter -- see _shim_tkinter.
 #   4. scvi-tools 0.20.3 imports anndata's SparseDataset, which newer anndata
 #      removed, so anndata has to be pinned back too.
-CPA_PINS = ["cpa-tools==0.8.1", "anndata<0.10", "scanpy<1.10"]
+#   5. scvi-tools 0.20.3 imports `jaxlib.xla_extension.Device`. That module no
+#      longer exists, and jaxlib older than 0.4.14 is no longer distributed for
+#      Python 3.10, so pinning back is not an option. Device was RENAMED rather
+#      than removed (it is jaxlib.xla_client.Device now) and scvi uses it only as
+#      a type annotation, so _shim_jaxlib re-exports it -- see that function.
+# The pattern is the point: cpa-tools 0.8.1's transitive closure is unsatisfiable
+# without pinning a good part of the scientific Python stack to 2023 versions.
+# That is the real cost of the comparison and belongs in a methods section.
+#   6. Its dependency stack still uses np.float_, removed in NumPy 2.0.
+CPA_PINS = ["cpa-tools==0.8.1", "anndata<0.10", "scanpy<1.10", "numpy<2"]
 
 
 # ---------------------------------------------------------------- venv --------
@@ -123,6 +132,7 @@ def prepare_venv(venv_dir, python=None):
           f"cannot share the VCPE environment)", flush=True)
     subprocess.run([py, "-m", "pip", "install", "--quiet"] + CPA_PINS, check=True)
     _shim_tkinter(venv_dir, py)
+    _shim_jaxlib(py)
     out = subprocess.run(
         [py, "-c", "import torch, cpa, importlib.metadata as m; "
                    "print('torch', torch.__version__); "
@@ -175,6 +185,50 @@ def _shim_tkinter(venv_dir, py):
             '        f"(e.g. the python3-tk OS package) if it is genuinely needed.")\n')
     print(f"[venv] wrote a tkinter stub at {stub} (see _shim_tkinter for why)",
           flush=True)
+
+
+def _shim_jaxlib(py):
+    """Re-export `jaxlib.xla_extension.Device` for scvi-tools 0.20.3.
+
+    scvi-tools 0.20.3 does `from jaxlib.xla_extension import Device`. That module
+    is gone in current jaxlib, and jaxlib older than 0.4.14 is no longer
+    distributed for Python 3.10, so pinning back is not available.
+
+    This is a rename, not a removal: the class is `jaxlib.xla_client.Device`, and
+    scvi uses the name only in type annotations (`def to(self, device: Device)`).
+    A module that re-exports the real class is therefore faithful -- unlike the
+    tkinter stub, nothing here is faked. If the attribute cannot be found, no
+    stub is written and the original ImportError stands rather than being masked.
+    """
+    probe = subprocess.run(
+        [py, "-c", "import jaxlib.xla_extension as m; m.Device"],
+        capture_output=True, text=True)
+    if probe.returncode == 0:
+        return                                      # nothing to do
+    where = subprocess.run(
+        [py, "-c", "import jaxlib.xla_client as c; print(bool(getattr(c, 'Device', None)))"],
+        capture_output=True, text=True).stdout.strip()
+    if where != "True":
+        print("[venv] WARNING: jaxlib.xla_client.Device not found either; leaving "
+              "the scvi-tools import error in place rather than faking the symbol.",
+              flush=True)
+        return
+    sp = subprocess.run(
+        [py, "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True, text=True).stdout.strip()
+    pkg = os.path.join(sp, "jaxlib", "xla_extension")
+    os.makedirs(pkg, exist_ok=True)
+    with open(os.path.join(pkg, "__init__.py"), "w") as f:
+        f.write(
+            '"""Compatibility re-export for scvi-tools 0.20.3.\n\n'
+            'scvi-tools 0.20.3 does `from jaxlib.xla_extension import Device`.\n'
+            'Current jaxlib exposes the same class as jaxlib.xla_client.Device;\n'
+            'this is a rename, and scvi uses the name only in type annotations.\n'
+            'The real class is re-exported, so nothing is faked.\n'
+            'Written by src/maprna_p3/baseline_cpa.py --prepare_venv.\n"""\n'
+            'from jaxlib.xla_client import Device  # noqa: F401\n')
+    print(f"[venv] re-exported jaxlib.xla_client.Device as "
+          f"jaxlib.xla_extension.Device (see _shim_jaxlib)", flush=True)
 
 
 # -------------------------------------------------------------- export --------
@@ -235,11 +289,30 @@ def stage_run(args):
 
     # CPA reads the split from an obs column, so VCPE's split goes in verbatim
     # rather than being approximated by one of CPA's own splitters.
-    tr = set(meta["train_conditions"])
-    va = set(meta["valid_conditions"])
-    te = set(meta["test_conditions"])
+    # GEARS-format data labels a single-gene perturbation "GENE+ctrl". CPA parses
+    # its perturbation key on "+" and counts every part as a perturbation, so
+    # "MYC+ctrl" reads as a two-way combination of MYC with the control -- which
+    # produces ragged combination lengths against plain "ctrl" rows and fails in
+    # np.vstack. Strip the suffix so CPA sees what the label actually means: one
+    # perturbed gene. The split sets are translated the same way, so the two
+    # cannot disagree.
+    def to_cpa_label(c):
+        c = str(c)
+        if c.lower() == "ctrl":
+            return "ctrl"
+        parts = [x for x in c.split("+") if x.lower() != "ctrl"]
+        return "+".join(parts) if parts else "ctrl"
+
+    tr = {to_cpa_label(c) for c in meta["train_conditions"]}
+    va = {to_cpa_label(c) for c in meta["valid_conditions"]}
+    te = {to_cpa_label(c) for c in meta["test_conditions"]}
+    raw_cond = adata.obs["condition"].astype(str)
+    adata.obs["condition"] = raw_cond.map(to_cpa_label)
     cond = adata.obs["condition"].astype(str)
     is_ctrl = cond.str.lower() == "ctrl"
+    max_comb = max(1, max(len(c.split("+")) for c in set(cond) if c != "ctrl"))
+    print(f"[cpa] perturbation labels: {len(set(cond)) - 1} distinct + ctrl | "
+          f"max combination length {max_comb}", flush=True)
 
     split = pd.Series("unused", index=adata.obs.index, dtype=object)
     split[cond.isin(tr)] = "train"
@@ -259,10 +332,23 @@ def stage_run(args):
     if "cell_type" not in adata.obs.columns:
         adata.obs["cell_type"] = "cells"
 
+    # cpa-tools 0.8.1 builds a perturbation -> SMILES map unconditionally in
+    # setup_anndata (the block runs whenever the class attribute is None,
+    # regardless of whether smiles_key was passed), so gene perturbations hit
+    # `KeyError: None`. Pre-setting the map to empty skips that block.
+    #
+    # This is the honest workaround rather than inventing a SMILES column:
+    # _model.py:111 shows the map is consumed ONLY under
+    # `use_rdkit_embeddings`, which is left off, so CPA uses its learned
+    # per-perturbation embeddings -- the correct representation for gene
+    # knockdowns. Supplying a placeholder SMILES string instead would make every
+    # perturbation chemically identical if that path were ever enabled.
+    cpa.CPA.pert_smiles_map = {}
+
     cpa.CPA.setup_anndata(
         adata, perturbation_key="condition", control_group="ctrl",
         dosage_key="dose", categorical_covariate_keys=["cell_type"],
-        is_count_data=False, max_comb_len=1)
+        is_count_data=False, max_comb_len=max_comb)
     model = cpa.CPA(adata=adata, split_key="split", train_split="train",
                     valid_split="valid", test_split="ood",
                     n_latent=args.n_latent)
@@ -283,7 +369,7 @@ def stage_run(args):
     out = np.zeros((len(meta["test_conditions"]), adata.n_vars), dtype=np.float32)
     n_cells = []
     for i, c in enumerate(meta["test_conditions"]):
-        sel = (cond == c).values
+        sel = (cond == to_cpa_label(c)).values
         n_cells.append(int(sel.sum()))
         if sel.any():
             out[i] = pred[sel].mean(axis=0)
