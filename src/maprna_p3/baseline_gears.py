@@ -78,8 +78,9 @@ sys.path.insert(0, os.path.dirname(_HERE))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "maprna_p1"))
 
 from train_p3 import build_dev_data  # noqa: E402
-from eval_metrics import (  # noqa: E402
-    bootstrap_ci_per_item, per_item_correlation, pooled_correlation, top_k_overlap)
+from baseline_common import (  # noqa: E402
+    align_to_panel, expression_to_dev, fairness_block, hvg_symbols,
+    inner_split_items, intersect_masks, score)
 from provenance import write_json  # noqa: E402
 
 
@@ -151,6 +152,12 @@ def parse_args():
     p.add_argument("--max_dense_gb", type=float, default=8.0,
                    help="memory ceiling for the dense-X workaround GEARS "
                         "needs on current scipy; see the note in main()")
+    p.add_argument("--runs", type=int, default=5,
+                   help="repeat the whole train+predict this many times and report "
+                        "the distribution. GEARS is NOT deterministic at a fixed "
+                        "seed -- measured here, 7 identical invocations spanned "
+                        "-0.023..+0.051 pearson_dev (sd 0.022, larger than the "
+                        "mean itself). A single run is not a usable baseline.")
     p.add_argument("--out_json", default="")
     return p.parse_args()
 
@@ -168,22 +175,11 @@ def vcpe_split_to_gears(train_items, val_items, test_items):
             "test": conds(test_items)}
 
 
-def align_to_hvg(pred_expr, gears_gene_names, hvg_symbols):
-    """Project a GEARS prediction onto VCPE's HVG panel by gene symbol.
-
-    Returns (vector over hvg_symbols, boolean found-mask). Genes GEARS does not
-    predict are left at zero and marked absent, so they can be excluded from
-    scoring rather than silently counted as a prediction of no change.
-    """
-    idx = {str(g): i for i, g in enumerate(gears_gene_names)}
-    out = np.zeros(len(hvg_symbols), dtype=np.float32)
-    found = np.zeros(len(hvg_symbols), dtype=bool)
-    for j, sym in enumerate(hvg_symbols):
-        i = idx.get(str(sym))
-        if i is not None:
-            out[j] = pred_expr[i]
-            found[j] = True
-    return out, found
+def align_to_hvg(pred_expr, gears_gene_names, hvg_symbols_):
+    """Kept as a name for the tests; the implementation is shared with every
+    other baseline in baseline_common.align_to_panel, so no baseline can drift
+    into aligning genes differently from another."""
+    return align_to_panel(pred_expr, gears_gene_names, hvg_symbols_)
 
 
 def main():
@@ -197,18 +193,13 @@ def main():
     # ---- 1. rebuild VCPE's split / panel / residual convention identically ----
     data = build_dev_data(args)
     hvg_rows = np.asarray(data["hvg_rows"])
-    is_val = data["is_inner_val"]
-    train_items = [it for it, v in zip(data["train_items"], is_val) if not v]
-    val_items = [it for it, v in zip(data["train_items"], is_val) if v]
-    test_items = data["test_items"]
+    train_items, val_items, test_items = inner_split_items(data)
     print(f"[vcpe] split_by={args.split_by}: train {len(train_items)} / "
           f"val {len(val_items)} / test {len(test_items)} conditions", flush=True)
 
     # HVG row ids -> gene symbols, so GEARS's var_names can be aligned to them
-    sym2row = data["sym2row"]
-    row2sym = {r: s for s, r in sym2row.items()}
-    hvg_symbols = [row2sym.get(int(r)) for r in hvg_rows]
-    n_named = sum(1 for s in hvg_symbols if s)
+    panel_symbols = hvg_symbols(data)
+    n_named = sum(1 for s in panel_symbols if s)
     print(f"[vcpe] HVG panel: {len(hvg_rows)} rows, {n_named} with a symbol", flush=True)
 
     # ---- 2. hand GEARS that split verbatim ----
@@ -238,14 +229,19 @@ def main():
     pert_data.get_dataloader(batch_size=args.batch_size,
                              test_batch_size=args.batch_size)
 
-    # ---- 3. train GEARS at its defaults ----
+    # ---- 3. train GEARS at its defaults, repeatedly ----
     # GEARS(...) is the only step that needs a dense X, so densify for exactly
     # that call and restore the sparse matrix afterwards. See _dense_X.
-    with _dense_X(pert_data, args.max_dense_gb):
-        model = GEARS(pert_data, device=args.device)
-    model.model_initialize(hidden_size=args.hidden_size)
-    print(f"[gears] training {args.epochs} epochs on {args.device} ...", flush=True)
-    model.train(epochs=args.epochs)
+    def train_once(run_idx):
+        with _dense_X(pert_data, args.max_dense_gb):
+            m = GEARS(pert_data, device=args.device)
+        m.model_initialize(hidden_size=args.hidden_size)
+        print(f"[gears] run {run_idx + 1}/{args.runs}: training {args.epochs} "
+              f"epochs on {args.device} ...", flush=True)
+        m.train(epochs=args.epochs)
+        return m
+
+    model = train_once(0)
 
     # ---- 4. predict the test conditions ----
     # GEARS can only predict perturbations present in its perturbation graph,
@@ -268,85 +264,98 @@ def main():
     gears_genes = list(pert_data.adata.var_names)
     ctrl = pert_data.adata[pert_data.adata.obs["condition"] == "ctrl"]
     ctrl_mean_full = np.asarray(ctrl.X.mean(axis=0)).ravel()
+    c_expr, c_found = align_to_panel(ctrl_mean_full, gears_genes, panel_symbols)
 
-    pred_dev = np.zeros((len(test_items), len(hvg_rows)), dtype=np.float32)
-    found_mask = np.zeros_like(pred_dev, dtype=bool)
-    skipped = []
-    for k, (_, cond) in enumerate(test_items):
-        gene = cond.split("+")[0]
-        try:
-            # GEARS.predict returns (results_pred, results_logvar) only when the
-            # uncertainty head is enabled, and results_pred alone otherwise, so
-            # unpacking a 2-tuple unconditionally fails on the default config.
-            out = model.predict([[gene]])
-            res = out[0] if isinstance(out, tuple) else out
-        except Exception as e:
-            skipped.append((cond, f"{type(e).__name__}: {str(e)[:70]}"))
-            continue
-        key = next(iter(res))
-        expr = np.asarray(res[key]).ravel()
-        # GEARS -> expression aligned to the HVG panel
-        p_expr, f1 = align_to_hvg(expr, gears_genes, hvg_symbols)
-        c_expr, f2 = align_to_hvg(ctrl_mean_full, gears_genes, hvg_symbols)
-        # same conversion VCPE's target uses: fc against ctrl, minus train-only core
-        pred_dev[k] = (p_expr - c_expr) - data["common_fc"]
-        found_mask[k] = f1 & f2
-    if skipped:
-        print(f"[gears] {len(skipped)} test conditions could not be predicted: "
-              f"{skipped[:5]}", flush=True)
+    def predict_all(m):
+        """Predicted residuals + coverage for every held-out condition."""
+        pred = np.zeros((len(test_items), len(hvg_rows)), dtype=np.float32)
+        cover = np.zeros_like(pred, dtype=bool)
+        missed = []
+        for k, (_, cond) in enumerate(test_items):
+            gene = cond.split("+")[0]
+            try:
+                # GEARS.predict returns (results_pred, results_logvar) only when
+                # the uncertainty head is enabled and results_pred alone otherwise,
+                # so unpacking a 2-tuple unconditionally fails on the default config.
+                out = m.predict([[gene]])
+                res = out[0] if isinstance(out, tuple) else out
+            except Exception as e:
+                missed.append((cond, f"{type(e).__name__}: {str(e)[:70]}"))
+                continue
+            expr = np.asarray(res[next(iter(res))]).ravel()
+            p_expr, f1 = align_to_panel(expr, gears_genes, panel_symbols)
+            # the same conversion VCPE's target uses: fc against the same control
+            # mean, minus the same train-only common core
+            pred[k] = expression_to_dev(p_expr, c_expr, data["common_fc"])
+            cover[k] = f1 & c_found
+        return pred, cover, missed
 
-    # ---- 5. score with VCPE's mask AND GEARS's coverage ----
+    # ---- 5. repeat, then score with VCPE's mask AND GEARS's coverage ----
     # Intersecting the two masks is the only honest choice: a column VCPE never
     # measured has no ground truth, and a column GEARS does not predict has no
     # prediction. Scoring either as "no change" would credit or penalise a model
     # for a gene it was never asked about.
-    mask = data["mask_te"] & found_mask
     true_dev = data["dev_te"]
-    scored = mask.any(axis=1)
+    per_run, skipped = [], []
+    for r in range(args.runs):
+        m = model if r == 0 else train_once(r)
+        pred_dev, found_mask, missed = predict_all(m)
+        skipped = missed
+        mask = intersect_masks(data["mask_te"], found_mask)
+        per_run.append(dict(run=r + 1, mask_fraction=float(mask.mean()),
+                            n_scored=int(mask.any(axis=1).sum()),
+                            **score(true_dev, pred_dev, mask, seed=args.seed + r)))
+        print(f"[gears] run {r + 1}/{args.runs}: pearson_dev "
+              f"{per_run[-1]['pearson_dev']:+.4f}", flush=True)
+    if skipped:
+        print(f"[gears] {len(skipped)} test conditions could not be predicted: "
+              f"{skipped[:5]}", flush=True)
+
+    vals = np.array([r["pearson_dev"] for r in per_run], dtype=float)
+    finite = vals[np.isfinite(vals)]
+    across = dict(
+        n_runs=int(len(finite)),
+        pearson_dev_mean=float(finite.mean()) if finite.size else float("nan"),
+        pearson_dev_sd=(float(finite.std(ddof=1)) if finite.size > 1 else None),
+        pearson_dev_min=float(finite.min()) if finite.size else float("nan"),
+        pearson_dev_max=float(finite.max()) if finite.size else float("nan"),
+        note=("GEARS is not deterministic at a fixed seed. Measured on this setup, "
+              "7 identical invocations spanned -0.023..+0.051 pearson_dev with a "
+              "sample sd of 0.022 -- larger than the mean itself. Quote the mean "
+              "and spread across runs, never a single run."),
+    )
     report = dict(
         n_test_conditions=int(len(test_items)),
-        n_scored_conditions=int(scored.sum()),
         n_skipped_not_in_pert_graph=len(skipped),
         skipped=[c for c, _ in skipped],
         vcpe_measured_fraction=float(data["mask_te"].mean()),
-        gears_coverage_fraction=float(found_mask.mean()),
-        intersected_mask_fraction=float(mask.mean()),
-        gears=dict(
-            pearson_dev=per_item_correlation(true_dev, pred_dev, mask),
-            pearson_dev_pooled=pooled_correlation(true_dev, pred_dev, mask),
-            top50_dev=top_k_overlap(true_dev, pred_dev, k=50, mask=mask),
-            pearson_dev_ci95=list(bootstrap_ci_per_item(true_dev, pred_dev, mask,
-                                                        n_boot=500, seed=args.seed)),
-        ),
+        gears_per_run=per_run,
+        gears_across_runs=across,
         config=dict(split_by=args.split_by, seed=args.seed, epochs=args.epochs,
                     hidden_size=args.hidden_size, device=args.device,
-                    n_hvg=args.n_hvg),
-        fairness_notes=[
-            "GEARS was given VCPE's exact train/val/test condition sets via its "
-            "custom-split mechanism.",
-            "GEARS's expression prediction was converted to the same residual VCPE "
-            "predicts: fc against the same control mean, minus the same train-only "
-            "common core. Comparing raw expression correlation against a residual "
-            "correlation would flatter GEARS, since the shared response dominates "
-            "raw expression.",
-            "Scored on VCPE's HVG panel with VCPE's measured mask intersected with "
-            "GEARS's gene coverage.",
-            "NOT controlled: GEARS runs at defaults while VCPE's hyperparameters "
-            "were tuned on this data over many runs. That asymmetry favours VCPE.",
-            "NOT controlled: GEARS at defaults is far larger than the 5.7M-parameter "
-            "VCPE head.",
-        ],
+                    n_hvg=args.n_hvg, runs=args.runs),
+        fairness=fairness_block(extra=[
+            "GEARS's perturbation graph is GO-derived, so a target gene can be in "
+            "the training split and still be unpredictable; the count of held-out "
+            "genes present in the graph is reported above.",
+            "GEARS is broken on a current scipy/pandas and required a dense-X "
+            "workaround scoped to its constructor; see the note in _dense_X. A "
+            "GEARS comparison is not reproducible today without that or an older "
+            "scipy, and which was used belongs next to this number.",
+            "GEARS does not reproduce its own result at a fixed seed, so its number "
+            "here is a mean over --runs repetitions with the spread reported.",
+        ]),
     )
 
-    print("\n=== GEARS on VCPE's split, panel and metrics ===", flush=True)
-    g = report["gears"]
-    print(f"  pearson_dev        {g['pearson_dev']:.4f}  "
-          f"CI95 [{g['pearson_dev_ci95'][0]:.4f}, {g['pearson_dev_ci95'][1]:.4f}]",
+    print(f"\n=== GEARS on VCPE's split, panel and metrics "
+          f"({across['n_runs']} runs) ===", flush=True)
+    sd = across["pearson_dev_sd"]
+    print(f"  pearson_dev  {across['pearson_dev_mean']:+.4f}"
+          + (f" +/- {sd:.4f} (sample sd)" if sd is not None else "")
+          + f"  range {across['pearson_dev_min']:+.4f}..{across['pearson_dev_max']:+.4f}",
           flush=True)
-    print(f"  pearson_dev_pooled {g['pearson_dev_pooled']:.4f}", flush=True)
-    print(f"  top50_dev          {g['top50_dev']}", flush=True)
-    print(f"  scored {report['n_scored_conditions']}/{report['n_test_conditions']} "
-          f"conditions | mask fraction {report['intersected_mask_fraction']:.3f}",
+    print(f"  mask fraction {per_run[0]['mask_fraction']:.3f} | scored "
+          f"{per_run[0]['n_scored']}/{report['n_test_conditions']} conditions",
           flush=True)
     print("\nCompare against the VCPE head's pearson_dev from the SAME "
           "--split_by / --seed / --n_hvg, and read the fairness notes before "

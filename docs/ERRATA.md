@@ -451,6 +451,57 @@ assignment, so that transfection stress does not leak into the baseline.
 three negative results this project can stand behind. Translated; criterion and
 values unchanged.
 
+## E14 — What running an external baseline actually costs
+
+Two findings from making E10's comparisons real, both of which change how a
+baseline number should be read.
+
+**a. GEARS does not reproduce its own result at a fixed seed.**
+Seven identical invocations of `baseline_gears.py --seed 0` on the same data and
+split gave `pearson_dev` from **-0.023 to +0.051**, sample sd **0.022** -- larger
+than the mean (+0.020) itself. A four-run set at a different epoch budget spanned
++0.033 to +0.163. A single GEARS run is therefore not a usable baseline number,
+and any table quoting one is quoting noise.
+
+This was found the right way round, and the method is worth recording: after a
+refactor changed a GEARS number, the refactor was first cleared by checking the
+shared helpers against the originals on synthetic input (byte-identical), and only
+then was the variance measured over repeated runs. Attributing the change to
+either cause without that check would have been a guess. `--runs` (default 5) now
+repeats and reports mean, sd and range.
+
+**b. CPA cannot share an environment with this repository, and needs four
+separate workarounds.**
+Each was hit in turn:
+
+1. `cpa-tools` pins `torch<2.0.0`; VCPE requires `torch>=2.1`. Installing CPA into
+   the VCPE environment silently downgraded torch from 2.14 to 1.13 and broke the
+   model code -- **95 passing tests became 8 failed and 6 errors**. pip states the
+   conflict outright. This is why `baseline_cpa.py` is split into three stages
+   (`export` / `run` / `score`) with the interface on disk instead of being a
+   single script like the GEARS adapter.
+2. torch 1.13 does not import on Python 3.11+ (`ValueError: mutable default ...
+   use default_factory`, a dataclass rule that tightened in 3.11), so the venv is
+   built on Python 3.10.
+3. `cpa/_model.py` line 4 is `from tkinter import N` -- a stray IDE auto-import.
+   `N` is never used anywhere in the package (verified: it is the only tkinter
+   reference, and the `N` occurrences in `_plotting.py` are local parameter
+   names), but it makes CPA unimportable on any Python without tkinter, which
+   includes most container images. `--prepare_venv` writes a minimal stub
+   providing only that one name, so a genuine tkinter dependency would still fail
+   loudly.
+4. `scvi-tools 0.20.3` imports `anndata._core.sparse_dataset.SparseDataset`, which
+   newer anndata removed, so anndata and scanpy have to be pinned back as well.
+
+None of this is CPA's fault as science, but all of it is the real cost of the
+comparison, and it belongs in a methods section rather than being discovered by
+the next person. A reproduction must record **both** environments.
+
+*Status:* the three-stage structure and the venv preparation are implemented and
+the `export` stage is verified; the `run` stage awaits the isolated environment.
+Stage 3 shares `baseline_common` with every other baseline, so no baseline can
+drift into being scored differently -- which is E1/E2 one level up.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically
