@@ -28,7 +28,8 @@ response direction and magnitude — a commercially usable replacement for Non-C
 > another; and the response-head split did not hold out target genes.
 >
 > Every defect, the numbers it invalidates, and how it was verified are in
-> **[docs/ERRATA.md](docs/ERRATA.md)**. The code in `src/` is fixed; the numbers
+> **[docs/ERRATA.md](docs/ERRATA.md)**; how to regenerate the numbers under the
+> corrected protocol is in **[docs/REPRODUCE.md](docs/REPRODUCE.md)**. The code in `src/` is fixed; the numbers
 > have not yet been regenerated, and the corrected ones are expected to be
 > **lower**. Please do not cite figures from earlier tags.
 >
@@ -117,6 +118,7 @@ state a performance number, read [docs/ERRATA.md](docs/ERRATA.md) first.
 | Report | Contents |
 |---|---|
 | [docs/ERRATA.md](docs/ERRATA.md) | **Start here.** Every evaluation defect found, the numbers it invalidates, how each was verified, and what remains outstanding |
+| [docs/REPRODUCE.md](docs/REPRODUCE.md) | How to regenerate every number under the corrected protocol, how to read the control baselines and the per-axis ablation, and a reporting checklist |
 | [docs/PLAN.md](docs/PLAN.md) | Project plan v0.3: decisions D1–D3, staged go/no-go gates, benchmark protocol, license checklist |
 | [docs/reports/p1_result.md](docs/reports/p1_result.md) | P1 gate report: 13-epoch trajectory, AMP spike diagnosis |
 | [docs/reports/p2_result.md](docs/reports/p2_result.md) | P2 verdict + **erratum**: complete evidence chain of the shared-response shortcut |
@@ -252,23 +254,29 @@ python src/maprna_p3/train_p3.py \
   --esm_table data/drive_weights/Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt \
   --out_dir ./p3_out --epochs 60 --split_by target_gene
 
-# 3) Stratified evaluation. Reports BOTH estimators side by side; --split_by must
+# 3) Multiple seeds -- required before quoting anything. The seed changes both
+#    the initialisation AND the grouped split, and the summary reports the
+#    PAIRED per-seed difference against each control baseline.
+python src/maprna_p3/run_seeds.py --seeds 0 1 2 3 4 --out_dir runs/p3_seeds -- \
+  --data_dirs ... --esm_table ... --epochs 60 --split_by target_gene
+
+# 4) Stratified evaluation. Reports BOTH estimators side by side; --split_by must
 #    match the value used for training or the reconstructed split is not the
 #    model's split.
 python src/maprna_p3/eval_fair.py --ckpt ./p3_out/ckpt_p3_best_dev.pt \
   --data_dirs ... --esm_table ... --split_by target_gene --out_json eval.json
 
-# 4) ASO efficacy CV, with inner-validation epoch selection and bootstrap CIs.
+# 5) ASO efficacy CV, with inner-validation epoch selection and bootstrap CIs.
 #    Run both arms of the positional ablation and report both.
 python src/efficacy/train_efficacy_v2.py --seeds 0 1 2 3 4
 python src/efficacy/train_efficacy_v2.py --seeds 0 1 2 3 4 --no_pos_emb
 
-# 5) siRNAmod, grouped by parent duplex; --also_random_cv shows how much of the
+# 6) siRNAmod, grouped by parent duplex; --also_random_cv shows how much of the
 #    previously reported number was parent-duplex recall.
 python src/efficacy/sirnamod_model.py --also_random_cv \
   --save_model data/drive_weights/sirnamod_xgb_v2.joblib
 
-# 6) Per-axis conditioning ablation. --split_by must match step 2.
+# 7) Per-axis conditioning ablation. --split_by must match step 2.
 #    Reports each channel separately (target ESM2 vector, RNA embedding,
 #    is_target, is_neighbor, ds embedding) plus an all-off floor. The only
 #    defensible conditioning claim is the gap from that floor.
@@ -276,7 +284,7 @@ python src/maprna_p3/ablate_axes.py --ckpt ./p3_out/ckpt_p3_best_dev.pt \
   --data_dirs ... --esm_table ... --split_by target_gene \
   --out_json ablation_report.json
 
-# 7) Full chain (P1/P2 need the MAP base + SE weights, 1 × 24G GPU)
+# 8) Full chain (P1/P2 need the MAP base + SE weights, 1 × 24G GPU)
 #    Command templates live in each script's docstring and in docs/PLAN.md
 ```
 

@@ -427,6 +427,9 @@ have reported the 0.57.
 
 ---
 
+See [REPRODUCE.md](REPRODUCE.md) for how to regenerate every number under the corrected protocol, including how to read the control
+baselines and the per-axis ablation table.
+
 ## Outstanding
 
 Ordered by what most constrains any claim the project can make:
