@@ -154,7 +154,8 @@ def evaluate(model, loader, device, hvg_rows, kd, common_fc):
             pear_l.append(float(np.corrcoef(t, p)[0, 1]) if t.std() > 1e-6 and p.std() > 1e-6 else 0.0)
             k = min(50, len(t))
             top_l.append(len(set(np.argsort(-np.abs(t))[:k]) & set(np.argsort(-np.abs(p))[:k])) / k)
-            # P2.1 dev metrics: 去共享成分后的判别力（不被共性响应灌水）
+            # P2.1 dev metrics: discriminative power after the shared
+            # component is removed (not inflated by the common response)
             td, pd_ = true_dev[b], pred_dev[b]
             dev_pear.append(float(np.corrcoef(td, pd_)[0, 1])
                             if td.std() > 1e-6 and pd_.std() > 1e-6 else 0.0)
@@ -191,7 +192,8 @@ def main():
     train_items, test_items = split_perturbations(kd["pert_index"], args.test_frac, args.seed)
     print(f"perts: train={len(train_items)} test={len(test_items)}", flush=True)
 
-    # ---- P2.1: common response core（仅从 train split 估计，防泄漏）----
+    # ---- P2.1: common response core (estimated from the train split only,
+    #            to prevent leakage) ----
     def true_hvg_of(di, cond):
         rows = kd["row_of_gene"][di]
         sel = np.where(kd["pert_labels"][di] == cond)[0]
@@ -242,7 +244,7 @@ def main():
     model = model.to(device)
     model.pert_token_scale = args.pert_token_scale
     print(f"pert_token_scale = {args.pert_token_scale}", flush=True)
-    # P2.2: STRING 网络轴
+    # P2.2: STRING network axis
     if args.string_neighbors and os.path.exists(args.string_neighbors):
         model.set_neighbor_table(np.load(args.string_neighbors), device)
         n_cov = int((model.neighbor_table >= 0).any(dim=1).sum())
@@ -308,7 +310,8 @@ def main():
             pert_row = batch["pert_row"].to(device)
             rna_tok = batch["rna_tokens"].to(device)
             rna_mask = batch["rna_mask"].to(device)
-            # P2.1: target = full fc minus common core → 模型必须用 pert token 才能降 loss
+            # P2.1: target = full fc minus common core → the model must use
+            # the pert token in order to reduce the loss
             true_hvg = batch["pert_hvg"].to(device) - common_fc_dev
             tgt_emb = torch.stack([
                 torch.from_numpy(emb_targets[(batch["ds"][i], batch["condition"][i])])

@@ -93,10 +93,10 @@ def predict_inhibition(seq, target_gene, cell_line=None,
     m = pack["model"]
     seq = "".join(ch for ch in str(seq).upper() if ch in "ACGT")
     if len(seq) < 10 or len(seq) > 30:
-        return dict(error=f"序列长度需 10-30nt（当前 {len(seq)}）")
+        return dict(error=f"sequence length must be 10-30 nt (got {len(seq)})")
     row = pack["gene2row"].get(target_gene)
     if row is None:
-        return dict(error=f"靶基因 {target_gene} 不在 ESM 表覆盖范围")
+        return dict(error=f"target gene {target_gene} is not in the ESM2 table")
 
     L = len(seq)
     # Vocabularies come from the loaded checkpoint's architecture, not from
@@ -119,7 +119,7 @@ def predict_inhibition(seq, target_gene, cell_line=None,
     pad = torch.zeros(1, L, dtype=torch.bool)
     gr = torch.tensor([row], dtype=torch.long)
 
-    used, cid = "均值嵌入回退（未收录细胞系）", None
+    used, cid = "mean-embedding fallback (cell line not in vocabulary)", None
     if cell_line:
         c2i = pack["cell2id"]
         hit_key = cell_line if cell_line in c2i else next(

@@ -1,20 +1,30 @@
 #!/usr/bin/env python
-"""GSE289964 摄入：in vivo 小鼠肝 Scarb1 gapmer ASO（3 修饰 × 3 时间点，48 样本）。
+"""GSE289964 ingestion: in vivo mouse liver Scarb1 gapmer ASO (3 modifications
+× 3 timepoints, 48 samples).
 
-数据：本地 AmpliSeq bcmatrix（48 样本 × 23,930 小鼠基因，counts）+ GEO series_matrix
-设计表（在线拉取，已验证）：
-  PBS 12（对照）| LX-A1656 / LX-A2003 / LX-A3928（均打 Scarb1）× 24h/72h/168h × 4 reps。
+Data: local AmpliSeq bcmatrix (48 samples × 23,930 mouse genes, counts) + the
+GEO series_matrix design table (fetched online, already verified):
+  PBS 12 (control) | LX-A1656 / LX-A2003 / LX-A3928 (all target Scarb1) ×
+  24h/72h/168h × 4 reps.
 
-口径：
-  condition = "Scarb1@{修饰}{时间}"（12 个扰动条件，每条件 4 reps）
-  control = 1 仅 PBS（12 样本）
-  X = CP10K + log1p（counts 直接归一化）
-  基因：小鼠 symbol -> 人 ortholog（MGI 首字母大写约定），与 ESM 表取交集，
-        映射不上的丢弃并报告映射率。
+Convention:
+  condition = "Scarb1@{modification}{timepoint}" (12 perturbation conditions,
+  4 reps each)
+      NOTE (this line does not match the code): the code writes
+      condition = "SCARB1" for every ASO sample and puts
+      "SCARB1@{mod}{timepoint}" into perturbation_raw instead (see the comment
+      in the obs-building loop). Also, the distinct modification × timepoint
+      combinations number 3 × 3 = 9, not 12.
+  control = 1 for PBS only (12 samples)
+  X = CP10K + log1p (counts normalized directly)
+  genes: mouse symbol -> human ortholog (MGI capitalize-first-letter
+        convention), intersected with the ESM table; genes that cannot be
+        mapped are dropped and the mapping rate is reported.
 
-Sanity：Scarb1 在各 ASO 组 vs PBS 应显著下调（gapmer 直接敲低）。
+Sanity: Scarb1 should be markedly down-regulated in each ASO group vs PBS (the
+gapmer knocks it down directly).
 
-用法：python ingest_gse289964.py [--list-only]
+Usage: python ingest_gse289964.py [--list-only]
 """
 import argparse
 import gzip
@@ -45,7 +55,7 @@ def fetch_design():
         if line.startswith("!Sample_title"):
             titles = [p.strip('"') for p in line.split("\t")[1:]]
             break
-    assert titles and len(titles) == 48, f"样本数异常: {len(titles) if titles else 0}"
+    assert titles and len(titles) == 48, f"bad sample count: {len(titles) if titles else 0}"
     samples = []
     for t in titles:
         tl = t.lower()
@@ -54,13 +64,15 @@ def fetch_design():
         if "pbs" in tl:
             samples.append(dict(title=t, mod="PBS", day=day or ""))
         else:
-            assert mod and day, f"无法解析样本: {t}"
+            assert mod and day, f"cannot parse sample: {t}"
             samples.append(dict(title=t, mod=mod, day=day))
     return samples
 
 
 def mouse_to_human(syms, esm_syms):
-    """MGI 命名约定：小鼠首字母大写、其余全大写 = 人同源基因（绝大多数 1:1）。"""
+    """MGI naming convention: the mouse symbol is capitalized first-letter only;
+    upper-casing all of it gives the human ortholog (1:1 in the vast majority).
+    """
     mapping, unmapped = {}, 0
     for s in syms:
         h = s.upper()          # Scarb1 -> SCARB1, Mup3 -> MUP3
@@ -84,20 +96,21 @@ def main():
     if args.list_only:
         return
 
-    # ---- 矩阵 ----
+    # ---- matrix ----
     df = pd.read_csv(BCM_FP, sep="\t", index_col=0)
     df.columns = [c.strip() for c in df.columns]
-    print(f"[data] {df.shape} | 基因 head: {list(df.index[:3])}", flush=True)
+    print(f"[data] {df.shape} | gene head: {list(df.index[:3])}", flush=True)
 
-    # ---- ESM 符号集 + 小鼠->人映射 ----
+    # ---- ESM symbol set + mouse->human mapping ----
     import torch
     tab = torch.load(ESM_FP, map_location="cpu", weights_only=False)
     esm_syms = set(tab.keys())
     mapping, unmapped = mouse_to_human(list(df.index), esm_syms)
-    print(f"[map] 小鼠基因 {len(df.index)} -> 人同源命中 {len(mapping)} "
-          f"(未映射 {unmapped})", flush=True)
+    print(f"[map] mouse genes {len(df.index)} -> human ortholog hits "
+          f"{len(mapping)} (unmapped {unmapped})", flush=True)
 
-    # ---- 聚合到人 symbol（同名多转录/多鼠基因求和）----
+    # ---- aggregate to human symbol (sum over same-named multiple
+    # transcripts / multiple mouse genes) ----
     genes = sorted(set(mapping.values()))
     gi = {g: i for i, g in enumerate(genes)}
     R = np.zeros((df.shape[1], len(genes)), dtype=np.float32)
@@ -110,7 +123,7 @@ def main():
     # CP10K + log1p
     tot = R.sum(axis=1, keepdims=True) + 1e-6
     X = np.log1p(R / tot * 1e4)
-    print(f"[agg] 人基因: {len(genes)} | 样本: {R.shape[0]}", flush=True)
+    print(f"[agg] human genes: {len(genes)} | samples: {R.shape[0]}", flush=True)
 
     # ---- obs ----
     obs_rows, order = [], []
@@ -120,9 +133,12 @@ def main():
         if s["mod"] == "PBS":
             cond, ctrl, praw = "ctrl", 1, "ctrl"
         else:
-            # resolve_pert_row 用整串 condition 查 ESM 符号表（人源大写），
-            # 修饰/时间点信息保留在 perturbation_raw；9 条件合流为同一靶点
-            # （模型无修饰轴，语义正确，与 GSE183535 condition=MYC 同口径）
+            # resolve_pert_row looks the whole condition string up in the ESM
+            # symbol table (human, upper-case), so the modification/timepoint
+            # information is kept in perturbation_raw; the 9 conditions are
+            # merged into one and the same target (the model has no
+            # modification axis, so this is semantically correct and on the
+            # same convention as GSE183535 condition=MYC)
             cond, ctrl, praw = "SCARB1", 0, \
                 f"SCARB1@{s['mod']}{s['day']}"
         cond_list.append(cond); ctrl_list.append(ctrl)
@@ -136,11 +152,11 @@ def main():
     import anndata as ad
     adata = ad.AnnData(X=X, obs=obs, var=pd.DataFrame(index=genes))
     adata.write_h5ad(OUT_FP)
-    print(f"[done] {OUT_FP} {adata.shape} | 扰动条件 "
+    print(f"[done] {OUT_FP} {adata.shape} | perturbation conditions "
           f"{len(set(c for c in cond_list if c != 'ctrl'))} | ctrl "
           f"{sum(1 for c in ctrl_list if c == 1)}", flush=True)
 
-    # ---- sanity：Scarb1 敲低方向（各修饰 24h vs PBS）----
+    # ---- sanity: Scarb1 knockdown direction (each modification 24h vs PBS) ----
     import torch as _t
     sym2row_sanity = None
     if "SCARB1" in gi:
@@ -150,10 +166,12 @@ def main():
             m = X[[j for j, s in enumerate(samples)
                    if s["mod"] == mod and s["day"] == "24h"], i].mean()
             fc = np.log2((np.expm1(m) + 1e-6) / (np.expm1(pbs_m) + 1e-6))
-            print(f"[sanity] SCARB1 {mod} 24h vs PBS: log2FC {fc:+.2f}（gapmer 应显著负）",
+            print(f"[sanity] SCARB1 {mod} 24h vs PBS: log2FC {fc:+.2f} "
+                  f"(the gapmer should be markedly negative)",
                   flush=True)
     else:
-        print("[sanity] SCARB1 不在映射结果中——检查映射！", flush=True)
+        print("[sanity] SCARB1 is not in the mapping result -- check the "
+              "mapping!", flush=True)
 
 
 if __name__ == "__main__":

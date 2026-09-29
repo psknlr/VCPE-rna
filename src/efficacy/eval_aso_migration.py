@@ -144,7 +144,8 @@ def main():
         else:
             rho = float("nan")
         print(f"\n[common-core vs NTASO stress] n={len(rows_core)} pearson {rho:.3f} "
-              f"(high = 共性核≈ASO 转染应激, 扣除逻辑自洽)", flush=True)
+              f"(a high value means the common core is close to the ASO transfection "
+          "stress response, so subtracting it is self-consistent)", flush=True)
 
     print("\nDONE", flush=True)
 

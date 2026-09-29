@@ -189,9 +189,12 @@ def build_dev_data(args):
           f"test {mask_te.mean():.3f} (unmeasured columns are excluded from "
           f"loss and metrics)", flush=True)
 
-    # V2-1a: 靶基因自身 ctrl 表达（raw log1p，供 self-response 门控）。
-    # 目标基因在所属数据集 panel 内 -> 取该列 ctrl 均值；panel 外 -> 0.0
-    #（此时目标一般也不在 HVG 响应 panel，is_tgt 行不存在，门控不起作用，安全）。
+    # V2-1a: ctrl expression of the target gene itself (raw log1p, feeds the
+    # self-response gate).
+    # Target gene inside the panel of its own dataset -> take that column's ctrl
+    # mean; outside the panel -> 0.0
+    # (in that case the target is usually not in the HVG response panel either,
+    # so there is no is_tgt row, the gate does not act, and this is safe).
     def pert_expr_of(split_items):
         E = np.zeros(len(split_items), dtype=np.float32)
         for k, (di, cond) in enumerate(split_items):

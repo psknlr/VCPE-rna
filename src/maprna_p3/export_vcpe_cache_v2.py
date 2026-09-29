@@ -199,8 +199,9 @@ def main():
     else:
         rna_embs_t = None
 
-    # n_ds 从 ckpt 的 ds_emb 权重形状自动推导（v3 训练 6 数据集、GSE293987 并入后 7，
-    # 写死会在 load_state_dict 时 shape mismatch）
+    # n_ds is derived automatically from the shape of the ckpt's ds_emb weight
+    # (v3 trained on 6 datasets, 7 once GSE293987 was merged in; hard-coding it
+    # would produce a shape mismatch in load_state_dict)
     n_ds = int(ck["model_state_dict"]["ds_emb.weight"].shape[0])
     print(f"[ckpt] n_ds={n_ds} (derived from ds_emb.weight)", flush=True)
     model = DeviationModel(esm, hvg_rows, n_ds=n_ds, rna_encoder=rna_enc).to(device).eval()
@@ -253,9 +254,11 @@ def main():
           f"(of n_ds={n_ds})", flush=True)
     ds0 = torch.full((args.batch_genes,), ds_index, dtype=torch.long)
     cf = ctrl_feat.to(device)
-    # v2-1a: 每个候选靶基因的 ctrl 表达（raw log1p，self-response 门控）。
-    # 靶基因在语境 panel 内 -> 该列 ctrl 均值；panel 外 -> 0.0（近零，硬压，
-    # 与 v2-0a 后处理的外部 HPA 谱系门控口径一致）。
+    # v2-1a: ctrl expression of every candidate target gene (raw log1p, for
+    # self-response gating).
+    # Target gene inside the context panel -> that column's ctrl mean; outside
+    # the panel -> 0.0 (near zero, hard suppression, on the same convention as
+    # the external HPA lineage gating of the v2-0a post-process).
     pert_expr_all = np.zeros(V, dtype=np.float32)
     for vi in range(V):
         c = row2col.get(int(vi))
@@ -278,7 +281,8 @@ def main():
 
     amp = np.abs(pred_dev).max(axis=1)
     print(f"[check] residual amplitude: median max|dev| {np.median(amp):.4f} "
-          f"(AIDO 同口径残差参照 ~0.4；修复前塌缩版 ~0.003)", flush=True)
+          f"(AIDO same-convention residual reference ~0.4; the collapsed "
+          f"version before the fix ~0.003)", flush=True)
 
     extra = {"export_protocol": "residual ranking (common core subtracted), "
                                 "values = residual fc",

@@ -294,7 +294,7 @@ if __name__ == '__main__':
 
     # modification-effect analysis: mean inhibition-rate difference for each
     # modification type
-    print('\n=== 修饰效应 ===')
+    print('\n=== modification effects ===')
     for m in ['fl2r', 's4r', 'lna', 'hna', 'una']:
         idx_m = [i for i, fn in enumerate(feat_names) if fn == f'sense_n_{m}']
         if not idx_m:
@@ -302,4 +302,6 @@ if __name__ == '__main__':
         j = idx_m[0]
         has = X[:, j] > 0
         if has.sum() > 5:
-            print(f'  sense {m}: n={int(has.sum())} | y={y[has].mean():.1f} vs 无={y[~has].mean():.1f} | Δ={y[has].mean()-y[~has].mean():+.1f}')
+            print(f'  sense {m}: n={int(has.sum())} | y={y[has].mean():.1f} '
+                  f'vs without={y[~has].mean():.1f} | '
+                  f'delta={y[has].mean()-y[~has].mean():+.1f}')

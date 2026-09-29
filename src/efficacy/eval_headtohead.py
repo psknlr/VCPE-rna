@@ -137,7 +137,8 @@ gene_counts = Counter(genes)
 gene_vocab = {g: i for i, (g, _) in enumerate(
     [(g, n) for g, n in gene_counts.most_common() if n >= 100])}
 print(f"xgb vocab: cells {len(cell_vocab)} genes {len(gene_vocab)} | "
-      f"val_gene 覆盖外的 test 基因见下", flush=True)
+      f"every held-out gene is out of this vocabulary by construction, so the "
+      f"XGBoost has no gene information on the val_gene slice", flush=True)
 
 def xgb_matrix(d):
     n = len(d)

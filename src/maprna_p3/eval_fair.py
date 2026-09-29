@@ -52,20 +52,27 @@ def main():
         data["rna_embs"] = make_rna_emb_lookup(args, data)
         print(f"[eval] rna embeddings: {len(data['rna_embs'])} perts", flush=True)
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-    # 一致性守卫：重建的 HVG panel / common_fc 必须与 ckpt 训练时一致，
-    # 否则第一层权重与基因对不上（表现为全域 pearson_dev 崩到 ~0.08 的假回退）。
-    # 规则：eval 的 --data_dirs 必须与训练完全相同（顺序一致）。
+    # Consistency guard: the rebuilt HVG panel / common_fc must be identical
+    # to the ones the ckpt was trained with, otherwise the first-layer weights
+    # do not line up with the genes (which shows up as a spurious regression:
+    # overall pearson_dev collapsing to ~0.08).
+    # Rule: the --data_dirs given to eval must be exactly the same as at
+    # training time (same order).
     if "hvg_rows" in ck:
         if not np.array_equal(np.asarray(ck["hvg_rows"], dtype=np.int64),
                               np.asarray(data["hvg_rows"], dtype=np.int64)):
             raise RuntimeError(
-                "重建的 HVG panel 与 ckpt 不一致！eval 的 --data_dirs 必须与该 ckpt "
-                "训练时完全相同（含 GSE293987 等 7 数据集 ckpt 就要给 7 个目录，顺序一致）。"
-                f"ckpt panel n={len(ck['hvg_rows'])} vs 重建 n={len(data['hvg_rows'])}")
+                "the rebuilt HVG panel does not match the ckpt! the "
+                "--data_dirs given to eval must be exactly the ones this ckpt "
+                "was trained with (a 7-dataset ckpt, e.g. one with GSE293987 "
+                "merged in, needs all 7 directories, in the same order). "
+                f"ckpt panel n={len(ck['hvg_rows'])} vs "
+                f"rebuilt n={len(data['hvg_rows'])}")
     if "common_fc" in ck:
         cf_ck = np.asarray(ck["common_fc"], dtype=np.float32)
         if not np.allclose(cf_ck, data["common_fc"], atol=1e-5):
-            print("[warn] common_fc 与 ckpt 不一致，已用 ckpt 值覆盖残差目标", flush=True)
+            print("[warn] common_fc does not match the ckpt; the residual "
+                  "targets have been overwritten with the ckpt value", flush=True)
             data["common_fc"] = cf_ck
             data["dev_tr"] = data["fc_tr"] - cf_ck
             data["dev_te"] = data["fc_te"] - cf_ck
@@ -83,8 +90,9 @@ def main():
         rna_enc.load_state_dict(state)
     tab = torch.load(args.esm_table, map_location="cpu", weights_only=False)
     esm_matrix = torch.stack(list(tab.values())).float()
-    # n_ds 从 ckpt 自动推导（eval data_dirs 可以不含全部训练数据集，
-    # 如 GSE293987 并入后 7 数据集 ckpt 配 6 目录 eval）
+    # n_ds is derived automatically from the ckpt (the eval data_dirs need not
+    # contain every training dataset, e.g. a 7-dataset ckpt after GSE293987 was
+    # merged in can be evaluated with 6 directories)
     n_ds_ckpt = int(ck["model_state_dict"]["ds_emb.weight"].shape[0])
     print(f"[ckpt] n_ds={n_ds_ckpt} (derived; eval data n_ds={data['n_ds']})", flush=True)
     model = DeviationModel(esm_matrix, data["hvg_rows"], n_ds=n_ds_ckpt,

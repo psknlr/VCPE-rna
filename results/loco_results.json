@@ -8,5 +8,6 @@
   "n_eval": 2355,
   "n_hvg": 2000,
   "gate": "FAIL",
-  "gate_rule": "zero-shot - fallback >= +0.02 且 zero-shot > 0.15；FAIL = 永久关闭（Route A 已消除数据条件借口）"
+  "gate_rule": "zero-shot minus fallback >= +0.02 AND zero-shot > 0.15. FAIL closes this track permanently: under Route A the data-availability explanation no longer applies, so a failure here is a failure of the approach rather than of the inputs.",
+  "gate_rule_note": "Pre-registered before the run; recorded as FAIL and not revised afterwards. Translated from the original Chinese in v4; the criterion and all values are unchanged."
 }
