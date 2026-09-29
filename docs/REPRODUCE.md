@@ -24,7 +24,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -q
 ```
 
-85 tests, no data or checkpoint assets. This includes an end-to-end smoke test
+86 tests, no data or checkpoint assets. This includes an end-to-end smoke test
 that builds synthetic Perturb-seq data and runs training plus the per-axis
 ablation as subprocesses, asserting that the grouped split holds genes out, the
 measured-column mask is applied, the test split is scored exactly once, and the
@@ -263,6 +263,9 @@ These are open and listed in ERRATA.md's Outstanding section:
   not. This is the single largest gap.
 * **No number has been regenerated** under the corrected protocol. The code is
   fixed; the results are not.
-* **The size of the masking effect (ERRATA E6) is unquantified** on real data —
-  run with and without the mask on one checkpoint to measure it.
+* **The size of the masking effect (ERRATA E6) is unquantified** on real data.
+  The harness is a flag: run the same configuration twice, once with `--no_mask`,
+  and compare. Watch the `train_mean` baseline as well as the model — it carries
+  no perturbation information, so any gain it shows when unmasked is pure
+  artefact. On synthetic data unmasking lifted it from −0.08 to +0.11.
 * **The L2 RNA-encoder track has no results**, only a launch command.

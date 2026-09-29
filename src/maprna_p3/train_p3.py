@@ -69,6 +69,16 @@ def parse_args():
     p.add_argument("--inner_val_frac", type=float, default=0.15,
                    help="fraction of TRAINING items held out for epoch/checkpoint "
                         "selection; the test split is scored once, afterwards")
+    p.add_argument("--no_mask", dest="use_mask", action="store_false", default=True,
+                   help="reproduce the pre-v4 behaviour in which HVG columns a "
+                        "dataset never measured entered the loss and every metric "
+                        "unmasked. Those columns carry a per-dataset CONSTANT "
+                        "target (dev == -common_fc) with no perturbation-specific "
+                        "content, so scoring them rewards reproducing that "
+                        "constant. Provided so the size of that inflation can be "
+                        "measured on real data by flipping this one flag "
+                        "(docs/ERRATA.md E6); it is not a configuration to train "
+                        "for release.\n")
     p.add_argument("--knn_k", type=int, default=10,
                    help="neighbours for the ESM2 retrieval control baseline")
     p.add_argument("--d_model", type=int, default=256)
@@ -279,7 +289,7 @@ def make_rna_emb_lookup(args, data):
 # ---------------- eval ----------------
 
 @torch.no_grad()
-def evaluate(model, data, split, device, esm_override_mode=None):
+def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
     """split: 'test' | 'train' | 'inner_val' | 'inner_train'.
 
     'inner_val' is the slice used for epoch/checkpoint selection; 'test' must be
@@ -339,7 +349,10 @@ def evaluate(model, data, split, device, esm_override_mode=None):
     # dataset panel. Unmeasured columns have dev == -common_fc identically for
     # every perturbation of the dataset, so scoring them rewards predicting a
     # dataset-level constant and inflates the per-perturbation correlations.
-    mask = mask_all
+    # --no_mask restores the pre-v4 behaviour so the inflation can be measured.
+    # use_mask=False restores the pre-v4 behaviour so the inflation from
+    # unmeasured columns can be measured (docs/ERRATA.md E6).
+    mask = mask_all if use_mask else np.ones_like(mask_all, dtype=bool)
 
     pred_fc = pred_dev + data["common_fc"]
     out = {}
@@ -433,7 +446,9 @@ def main():
     # Same masking rationale as in evaluate(): unmeasured HVG columns carry a
     # dataset-level constant target and no perturbation-specific signal, so
     # training on them teaches the model to reproduce that constant.
-    mask_tr_t = torch.from_numpy(data["mask_tr"]).float().to(device)
+    mask_tr_t = torch.from_numpy(
+        data["mask_tr"] if args.use_mask
+        else np.ones_like(data["mask_tr"])).float().to(device)
     ds_tr = torch.tensor([di for di, _ in data["train_items"]], dtype=torch.long)
     rows_tr = torch.tensor(data["rows_tr"], dtype=torch.long)
     cf_tr = torch.from_numpy(data["ctrl_feat_all"][ds_tr.numpy()]).float().to(device)
@@ -466,7 +481,8 @@ def main():
                    train_loss=float(np.mean(run)), secs=round(time.time() - t0, 1))
         model.eval()
         with torch.no_grad():
-            ev_in = evaluate(model, data, "inner_val", device)
+            ev_in = evaluate(model, data, "inner_val", device,
+                             use_mask=args.use_mask)
             ev = ev_in  # logged per epoch; the test split is NOT scored here
         # ablation r on the INNER-VAL slice: the test split is reserved for a
         # single scoring pass after selection.
@@ -530,7 +546,7 @@ def main():
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     load_dev_state(model, ck)
     model.to(device).eval()
-    final = evaluate(model, data, "test", device)
+    final = evaluate(model, data, "test", device, use_mask=args.use_mask)
     final["selected_epoch"] = best_epoch
     final["inner_val_pearson_dev_at_selection"] = float(best_pd)
     final["split_by"] = args.split_by
@@ -541,8 +557,9 @@ def main():
     esm_np = model.esm_table.detach().cpu().numpy()
     base_preds = run_all(
         data["dev_tr"], esm_np[data["rows_tr"]], esm_np[data["rows_te"]],
-        mask_tr=data["mask_tr"], knn_k=args.knn_k)
-    mask_te, dev_te = data["mask_te"], data["dev_te"]
+        mask_tr=(data["mask_tr"] if args.use_mask else None), knn_k=args.knn_k)
+    mask_te = data["mask_te"] if args.use_mask else np.ones_like(data["mask_te"])
+    dev_te = data["dev_te"]
     final["baselines"] = {}
     for name, pred in base_preds.items():
         final["baselines"][name] = dict(

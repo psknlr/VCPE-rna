@@ -166,6 +166,33 @@ def test_per_axis_ablation_separates_live_from_dead_channels(synth, trained):
         or "conditioning_gain" in rep["interpretation"]
 
 
+def test_unmasked_run_inflates_a_baseline_that_has_no_conditioning(synth):
+    """E6, measured rather than argued.
+
+    `train_mean` predicts the mean training residual and ignores which gene was
+    perturbed, so it carries NO perturbation-specific information. If unmasking
+    the never-measured columns lifts its score, the unmasked metric is rewarding
+    reproduction of a per-dataset constant -- which is the mechanism, shown
+    directly rather than inferred.
+    """
+    common = ["--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+              "--esm_table", str(synth / "esm.pt"), "--epochs", "4",
+              "--n_hvg", "40", "--batch_size", "8", "--split_by", "target_gene"]
+    _run(["src/maprna_p3/train_p3.py", "--out_dir", str(synth / "m_on")] + common)
+    _run(["src/maprna_p3/train_p3.py", "--out_dir", str(synth / "m_off"),
+          "--no_mask"] + common)
+    on = json.loads((synth / "m_on" / "final_report.json").read_text())
+    off = json.loads((synth / "m_off" / "final_report.json").read_text())
+
+    assert on["measured_fraction"] < 1.0
+    assert off["measured_fraction"] == pytest.approx(1.0)
+    b_on = on["baselines"]["train_mean"]["pearson_dev"]
+    b_off = off["baselines"]["train_mean"]["pearson_dev"]
+    assert b_off > b_on, (
+        "unmasking must inflate a conditioning-free baseline; got "
+        f"masked {b_on:.4f} vs unmasked {b_off:.4f}")
+
+
 def test_pert_split_warns_that_genes_appear_on_both_sides(synth):
     """E5: the historical split is still available, but must announce the leak."""
     log = _run(["src/maprna_p3/train_p3.py",

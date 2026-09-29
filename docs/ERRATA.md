@@ -445,7 +445,9 @@ Ordered by what most constrains any claim the project can make:
    OligoAI/ASOptimizer/OligoWalk for the ASO head, is still outstanding.
 2. Re-run every reported number under the corrected protocol and replace the
    withdrawn figures.
-3. Quantify E6 on real data (masked vs unmasked, same checkpoint).
+3. Quantify E6 on real data: a `--no_mask` A/B on one checkpoint. The harness
+   exists and the mechanism is demonstrated on synthetic data (see E6); the
+   magnitude on the real corpus is unmeasured.
 4. ~~Per-axis ablations~~ — **implemented** (`src/maprna_p3/ablate_axes.py`).
    Perturbation identity reaches the model through four channels (target ESM2
    vector, RNA embedding, `is_target`, `is_neighbor`) plus the `ds` embedding;
