@@ -42,7 +42,8 @@ def ensure_protein_info(path):
 
 
 def load_protein_info(path):
-    """-> (sym2ensp, ensp2sym)。兼容 v11.5（protein_external_id）与 v12.0（#string_protein_id）。"""
+    """-> (sym2ensp, ensp2sym). Compatible with v11.5 (protein_external_id)
+    and v12.0 (#string_protein_id)."""
     sym2ensp, ensp2sym = {}, {}
     with gzip.open(path, "rt") as f:
         header = f.readline().rstrip("\n").lstrip("#").split("\t")

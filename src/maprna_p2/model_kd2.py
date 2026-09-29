@@ -36,9 +36,11 @@ class MAPmodelKD2(MAPmodelKD):
             self.rna_encoder.load_state_dict(rna_encoder_state)
         self.rna_projector = nn.Linear(rna_d_model, self.pert_model.base.dim_emb)
         self.pert_token_scale = 1.0  # P2.1: set from train script
-        # P2.2: STRING 网络轴。neighbor_table [V, K] long（ESM2 行索引，-1 pad），
-        # 由 build_string_neighbors.py 产出、train/diag 用 set_neighbor_table 注入。
-        # 注意：普通 attribute（不注册 buffer），不进 state_dict、需手动 .to(device)。
+        # P2.2: STRING network axis. neighbor_table [V, K] long (ESM2 row
+        # indices, -1 pad), produced by build_string_neighbors.py and injected
+        # by train/diag via set_neighbor_table.
+        # Note: a plain attribute (NOT registered as a buffer), so it does not
+        # go into state_dict and needs a manual .to(device).
         self.neighbor_table = None
         esm_dim = self.pert_model.esm_table.shape[1]
         self.net_proj = nn.Linear(2 * esm_dim, self.pert_model.base.dim_emb)
@@ -48,8 +50,14 @@ class MAPmodelKD2(MAPmodelKD):
         self.neighbor_table = torch.from_numpy(np.asarray(table_np)).long().to(device)
 
     def compute_pert_vec(self, pert_rows, rna_tokens, rna_mask):
-        """P2.2 三轴条件化：机制轴(ESM2) ⊕ 网络轴(STRING 邻居均值) ⊕ 序列轴(RNA 编码器)。
-        返回 [Bp, dim_emb]。"""
+        """P2.2 three-axis conditioning: mechanism axis (ESM2) ⊕ network axis
+        (STRING neighbor mean) ⊕ sequence axis (RNA encoder).
+        Returns [Bp, dim_emb].
+
+        Note: the network axis is used only when neighbor_table has been set;
+        when it is None the code below falls back to kd_projector(ESM2), so
+        only two axes are combined rather than three.
+        """
         esm_vec = self.pert_model.esm_table[pert_rows]                      # [Bp, 5120]
         if self.neighbor_table is not None:
             nb = self.neighbor_table[pert_rows]                             # [Bp, K]
@@ -87,7 +95,8 @@ class MAPmodelKD2(MAPmodelKD):
                 src=src, counts=expressions, dataset_nums=None, profile=False)
         gene_output = gene_output[:, 1:-1, :]
 
-        # P2.2 三轴 pert token；pert_vec_override: ablation 入口（置零/打乱）
+        # P2.2 three-axis pert token; pert_vec_override: ablation entry point
+        # (zero out / shuffle)
         if pert_vec_override is not None:
             pert_vec = pert_vec_override                                        # [Bp, dim_emb]
         else:

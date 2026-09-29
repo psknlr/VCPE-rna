@@ -3,7 +3,7 @@
 Input : rnacentral_active.fasta.gz (streaming)
 Output: l2_filtered.fasta (plain text, streaming) + filter_stats.json
 
-Filters (per L2 立项书):
+Filters (per docs/PLAN.md, "L2 Encoder Expansion Kickoff"):
   - length 20-500 nt
   - N fraction <= 10%
   - exact dedup (blake2b hash of normalized sequence; 45M entries ~ 1GB RAM)
