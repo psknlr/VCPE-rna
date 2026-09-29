@@ -145,7 +145,7 @@ def load_data():
         X_dicts.append(build_features(sense, antisense))
         y_vals.append(float(r['y']))
         groups.append(parent_key(sense, antisense))
-    # 统一特征空间
+    # unify the feature space
     all_keys = sorted(set(k for d in X_dicts for k in d))
     X = np.array([[d.get(k, 0) for k in all_keys] for d in X_dicts], dtype=np.float32)
     y = np.array(y_vals, dtype=np.float32)
@@ -279,12 +279,21 @@ if __name__ == '__main__':
         import joblib
         n_est = int(np.median([b for b in res['best_iterations'] if b > 0]) or 300)
         m = fit_full(X, y, groups, seed=a.seed, n_estimators=n_est)
-        joblib.dump({'model': m, 'feature_names': feat_names,
+        # 'feat_names' is the key the shipped v1 artifact uses and the key
+        # sirnamod_predict reads; 'feature_names' is written alongside it for
+        # readability. Writing only the latter made every newly saved model
+        # fail to load in sirnamod_predict.
+        joblib.dump({'model': m, 'feat_names': feat_names,
+                     'feature_names': feat_names,
+                     # consumed by sirnamod_predict to detect a feature-order
+                     # mismatch; omitting it disables that guard
+                     'mod_order': list(MOD_ORDER),
                      'n_estimators': n_est, 'seed': a.seed,
                      'cv': res}, a.save_model)
         print(f'wrote {a.save_model} (n_estimators={n_est} from grouped-CV median)')
 
-    # 修饰效应分析：各修饰类型的平均抑制率差异
+    # modification-effect analysis: mean inhibition-rate difference for each
+    # modification type
     print('\n=== 修饰效应 ===')
     for m in ['fl2r', 's4r', 'lna', 'hna', 'una']:
         idx_m = [i for i, fn in enumerate(feat_names) if fn == f'sense_n_{m}']

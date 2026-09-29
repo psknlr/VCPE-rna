@@ -1,13 +1,20 @@
 """siRNA efficacy head v1 — EXTERNAL held-out eval (Takayuki Ichihara 2007 set).
 
-训练：Huesken (ichihara_2007_1, 2,431 guide strands, 30 targets) 全量，架构/超参
-与 train_sirna_v1.py 完全一致（21mer guide transformer + 冻结 ESM2 靶轴, 60ep/bs256/lr1e-3）。
+Training: Huesken (ichihara_2007_1, 2,431 guide strands, 30 targets), full set;
+architecture/hyperparameters exactly identical to train_sirna_v1.py (21mer guide
+transformer + frozen ESM2 target axis, 60ep/bs256/lr1e-3).
 
-外部验证：ichihara_2007_2（OligoGym 过滤版 Takayuki Ichihara 集, 419 条,
-12 靶点 EGFR/TP53/GAPDH/... 与训练集零靶点重叠——真正的 external held-out。
-RNAGenesis 论文用原始 702 条版本，此处为 OligoGym CC-BY 同源子集）。
+External validation: ichihara_2007_2 (the OligoGym-filtered Takayuki Ichihara
+set, 419 rows, 12 targets EGFR/TP53/GAPDH/... zero target overlap with the
+training set -- a genuine external held-out. The RNAGenesis paper uses the
+original 702-row version; this is the OligoGym CC-BY homologous subset).
+NOTE: the zero-overlap claim above is only asserted here, never enforced -- the
+code below runs an explicit [holdout-check] for target overlap and for exact
+guide-sequence overlap and WARNS when it finds any, so the claim may not hold
+for the shipped files.
 
-指标：pooled Spearman/Pearson + per-target Spearman（排名指标，跨实验批次稳健）。
+Metrics: pooled Spearman/Pearson + per-target Spearman (ranking metrics, robust
+across experimental batches).
 
 Run locally (CPU, minutes): python eval_sirna_external.py
 """
@@ -84,7 +91,7 @@ def main():
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     T0 = time.time()
 
-    # ---- 数据 ----
+    # ---- data ----
     tr_df = pd.read_csv(TRAIN_CSV)
     te_df = pd.read_csv(TEST_CSV)
     n0 = len(te_df)
@@ -144,7 +151,7 @@ def main():
     print(f"test targets mapped to ESM2: {len(covered)}/{len(set(TE['targets']))} "
           f"-> {sorted(covered)}", flush=True)
 
-    # ---- 训练（全量 Huesken，同 v1 超参）----
+    # ---- training (full Huesken set, same v1 hyperparameters) ----
     torch.manual_seed(SEED)
     np.random.seed(SEED)
     rng = np.random.default_rng(SEED)
@@ -171,7 +178,7 @@ def main():
 
     torch.save(model.state_dict(), os.path.join(OUT, "sirna_v1_full_train.pt"))
 
-    # ---- 外部评估 ----
+    # ---- external evaluation ----
     model.eval()
     with torch.no_grad():
         p_te = model(TE["ids"].to(dev), TE["pad"].to(dev),

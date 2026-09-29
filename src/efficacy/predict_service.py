@@ -62,7 +62,7 @@ def _load(ckpt_fp=None, esm_fp=None):
     # the current ones.
     m, arch = load_efficacy_head(ck, esm, n_cell)
     m.eval()
-    n_trained = n_cell - 1                      # 末行未训练（未知回退保留位）
+    n_trained = n_cell - 1                      # last row untrained (reserved unknown fallback)
     cell_mean = m.cell_emb.weight[:n_trained].mean(0).detach()
     b_voc, s_voc, k_voc = vocabs(arch.get("legacy_vocab", True))
     pack = dict(model=m, gene2row=gene2row, cell2id=ck["cell2id"],
@@ -76,7 +76,9 @@ def _load(ckpt_fp=None, esm_fp=None):
 # Vocabularies are taken from the loaded checkpoint via model_efficacy.vocabs();
 # module-level index tables were removed because they silently assumed the
 # pre-v4 layout, in which index 0 meant "DNA"/"PO" rather than PAD.
-# 训练词表无 LNA 类：LNA 与 cEt 同属约束型 BNA 家族，映射到 cEt（模型已学的最近类）
+# The training vocabulary has no LNA class: LNA and cEt both belong to the
+# constrained BNA family, so LNA is mapped to cEt (the nearest class the
+# model has already learned).
 WING_MAP = {"dna": "DNA", "unmodified": "DNA", "moe": "MOE",
             "lna": "cEt", "cet": "cEt", "f": "F", "mix": "MOE"}
 
@@ -84,7 +86,9 @@ WING_MAP = {"dna": "DNA", "unmodified": "DNA", "moe": "MOE",
 def predict_inhibition(seq, target_gene, cell_line=None,
                        wing_mod=None, wing_len=3,
                        ckpt_fp=None, esm_fp=None):
-    """返回 dict；error 键存在表示预测失败（调用方回退手输效率）。"""
+    """Return a dict; presence of an `error` key means the prediction failed
+    (the caller then falls back to a hand-entered efficacy).
+    """
     pack = _load(ckpt_fp, esm_fp)
     m = pack["model"]
     seq = "".join(ch for ch in str(seq).upper() if ch in "ACGT")
@@ -216,7 +220,9 @@ def _xgb_available():
 
 
 def _chem_stub(wing_eff, L, wl):
-    """构造 train_aso_xgb.extract_chemistry_features 兼容的 chemistry stub（翼修饰语义）。"""
+    """Build a chemistry stub compatible with
+    train_aso_xgb.extract_chemistry_features (wing-modification semantics).
+    """
     class _Mod:
         def __init__(self, m, t, pos):
             self.__dict__ = {"modification": m, "type": t, "positions": pos}
@@ -232,8 +238,25 @@ def _chem_stub(wing_eff, L, wl):
 
 
 def predict_kd_hybrid(seq, target_gene, cell_line=None, wing_mod=None, wing_len=3):
-    """统一效力入口：按靶基因是否在 XGBoost 词表内路由，返回字段与 predict_inhibition 一致
-    （额外带 model_source: 'xgboost_v5' | 'transformer'）。"""
+    """Unified efficacy entry point: routes on whether the target gene is in the
+    external XGBoost vocabulary. Returns the same fields as predict_inhibition,
+    plus `model_source` ('xgboost_v5' | 'transformer').
+
+    Field parity is enforced below by building the reply from the transformer's
+    and overriding only what the external model actually supplies. Before that,
+    the 'xgboost_v5' branch silently broke parity four ways: it omitted
+    position_aware / model / heldout_metrics, omitted the chemistry keys
+    backbone and is_gapmer, reported raw_pred as a 0-1 fraction where
+    predict_inhibition reports a percent, and -- worst -- clipped kd to a 0.20
+    floor while leaving inhibition_pct free. That last one contradicted this
+    module's guarantee that kd == inhibition_pct / 100 and reinstated exactly
+    the pre-v4 behaviour ERRATA E12g records as removed, in the branch the
+    platform was told to prefer.
+
+    Reachable only when $RNA_ROBOT_HOME points at the private platform
+    repository; for every external user this returns predict_inhibition's reply
+    unchanged.
+    """
     base = predict_inhibition(seq, target_gene, cell_line=cell_line,
                               wing_mod=wing_mod, wing_len=wing_len)
     base["model_source"] = "transformer"
@@ -254,15 +277,30 @@ def predict_kd_hybrid(seq, target_gene, cell_line=None, wing_mod=None, wing_len=
         kd = _tx.predict_aso_kd(seq_clean, cell_line=cell_line or "HeLa",
                             target_gene=str(target_gene),
                             chemistry_obj=_chem_stub(wing_eff, L, wl))
+        # Start from the transformer's reply so every field exists, then override
+        # only the prediction itself. kd is derived from inhibition_pct, never
+        # clipped independently -- the two must agree, and no floor is applied.
         inh = float(min(max(kd * 100.0, 0.0), 95.0))
-        kd_c = float(min(max(kd, 0.2), 0.95))
-        return dict(inhibition_pct=round(inh, 1), kd=round(kd_c, 3),
-                    cell_line_used=cell_line or "未指定",
-                    target=target_gene, raw_pred=round(kd, 3),
-                    chemistry=dict(wing=wing_eff, wing_len=wl,
-                                   mapped=("LNA->cEt" if str(wing_mod or "").lower() == "lna"
-                                           else None)),
-                    model_source="xgboost_v5")
+        out = dict(base)
+        out.update(inhibition_pct=round(inh, 1), kd=round(inh / 100.0, 3),
+                   raw_pred=round(kd * 100.0, 2),   # a percent, as in the other branch
+                   cell_line_used=cell_line or "unspecified",
+                   target=target_gene,
+                   model="external XGBoost via $RNA_ROBOT_HOME; not distributed "
+                         "in this repository and carries no held-out metrics here",
+                   heldout_metrics="unavailable: this model is not in this repository",
+                   model_source="xgboost_v5")
+        out["chemistry"] = dict(wing=wing_eff, wing_len=wl,
+                                backbone="PS (uniform)",
+                                is_gapmer=bool(wl > 0 and wing_eff != "DNA"),
+                                mapped=("LNA->cEt"
+                                        if str(wing_mod or "").lower() == "lna"
+                                        else None))
+        return out
     except Exception as e:  # noqa
-        print(f"[hybrid] xgb 分支失败回退 transformer: {str(e)[:90]}", flush=True)
+        # A silent fallback would make a failure of the "preferred" model
+        # invisible to the caller, so say so and mark the source.
+        print(f"[hybrid] xgboost branch failed, falling back to the transformer: "
+              f"{str(e)[:90]}", flush=True)
+        base["xgb_fallback_reason"] = str(e)[:200]
         return base

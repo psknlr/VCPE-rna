@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""siRNAmod 修饰感知预测（平台集成入口）。
+"""siRNAmod modification-aware prediction (platform integration entry point).
 
-用法 ①（效力路由）：predict_modified_efficiency(sense, antisense, mod_pattern) → 0-1 校正后效率
-用法 ②（独立工具）：predict_inhibition(sense, antisense, sense_mods, antisense_mods) → 0-100 抑制率
+Usage (1) (efficacy routing): predict_modified_efficiency(sense, antisense,
+    mod_pattern) -> corrected efficiency in 0-1
+Usage (2) (standalone tool): predict_inhibition(sense, antisense, sense_mods,
+    antisense_mods) -> inhibition rate in 0-100
 """
 import joblib
 import os
@@ -16,7 +18,9 @@ _MOD_ORDER = ['unmod', 'fl2r', 's4r', 'lna', 'hna', 'una', 'ome', 'dna']
 _MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "..", "..", "data", "drive_weights", "sirnamod_xgb_v1.joblib")
 
-# 常见修饰模式预设 → (sense_mods_fn, antisense_mods_fn)
+# Presets for common modification patterns -> (sense_mods_fn, antisense_mods_fn)
+# NOTE: each value is in fact ONE function of `seq` that returns the tuple
+# (sense_mods, antisense_mods), not a pair of functions.
 MOD_PATTERNS = {
     "unmodified": lambda seq: (['unmod'] * len(seq), ['unmod'] * len(seq)),
     "2F_alternating": lambda seq: (['fl2r' if i % 2 == 0 else 'unmod' for i in range(len(seq))],
@@ -38,11 +42,35 @@ def _ensure_model():
         return
     data = joblib.load(_MODEL_PATH)
     _MODEL = data['model']
-    _FEAT_NAMES = data['feat_names']
+    # The shipped v1 artifact stores this as 'feat_names'; the producer added in
+    # sirnamod_model.py writes 'feature_names'. Accept either, and fail with the
+    # keys actually present rather than a bare KeyError, so a mismatch is
+    # diagnosable instead of mysterious.
+    for key in ('feat_names', 'feature_names'):
+        if key in data:
+            _FEAT_NAMES = data[key]
+            break
+    else:
+        raise KeyError(
+            f"{_MODEL_PATH} has no feature-name list; expected 'feat_names' or "
+            f"'feature_names', found {sorted(data)}")
+
+    # The artifact records the modification order its features were built with,
+    # but this module previously ignored it and used the hard-coded _MOD_ORDER
+    # above. An artifact trained with a different order would then have its
+    # features assembled in the wrong order and return confidently wrong
+    # predictions, with nothing to indicate it. Validate instead.
+    stored = data.get('mod_order')
+    if stored is not None and list(stored) != list(_MOD_ORDER):
+        raise ValueError(
+            f"{_MODEL_PATH} was built with modification order {list(stored)}, but "
+            f"this module builds features in the order {list(_MOD_ORDER)}. "
+            f"Features would be assembled in the wrong order. Update _MOD_ORDER "
+            f"to match the artifact, or retrain the artifact.")
 
 
 def build_features(sense, antisense, max_len=25):
-    """与 sirnamod_model.build_features 完全一致的特征构建。
+    """Feature construction exactly identical to sirnamod_model.build_features.
 
     Args:
         sense: list of (base, mod) tuples
@@ -78,16 +106,23 @@ def build_features(sense, antisense, max_len=25):
 
 
 def predict_inhibition(sense_seq, antisense_seq, sense_mods=None, antisense_mods=None):
-    """预测修饰 siRNA 抑制率 %。
+    """Predict the inhibition rate % of a modified siRNA.
 
     Args:
-        sense_seq: str 引导链序列（19-25 nt）
-        antisense_seq: str 反义链序列
-        sense_mods: list[str] per-position 修饰类型（None=全 unmod）
-        antisense_mods: list[str] 同上
+        sense_seq: str guide-strand sequence (19-25 nt)
+        antisense_seq: str antisense-strand sequence
+        sense_mods: list[str] per-position modification type (None = all unmod)
+        antisense_mods: list[str] same as above
 
     Returns:
-        float, 预测抑制率 %（0-100，clip 到 [0, 100]）
+        float, predicted inhibition rate % (0-100, clipped to [0, 100])
+
+    NOTE: `sense_seq` is labelled the "guide strand" above, but in an siRNA
+    duplex the guide strand is the ANTISENSE strand; the code feeds `sense_seq`
+    into the sense-strand features of build_features, so the label, not the
+    code, is the inconsistent part. The stated 19-25 nt range is not checked
+    anywhere -- build_features only truncates positional features at
+    max_len=25.
     """
     _ensure_model()
     sense_nts = [(b, (sense_mods[i] if sense_mods and i < len(sense_mods) else 'unmod'))
@@ -101,18 +136,24 @@ def predict_inhibition(sense_seq, antisense_seq, sense_mods=None, antisense_mods
 
 
 def predict_modified_efficiency(sense_seq, antisense_seq, mod_pattern="unmodified"):
-    """效力路由集成入口：修饰模式 → 校正后敲低效率（0-1）。
+    """Efficacy-routing integration entry point: modification pattern ->
+    corrected knockdown efficiency (0-1).
 
     Args:
-        sense_seq: str 引导链序列
-        antisense_seq: str 反义链序列
-        mod_pattern: str 修饰模式名（MOD_PATTERNS 的 key）或 None
+        sense_seq: str guide-strand sequence
+        antisense_seq: str antisense-strand sequence
+        mod_pattern: str modification-pattern name (a key of MOD_PATTERNS) or None
 
     Returns:
         (efficiency_0_1, sirnamod_inhibition_pct, mod_label)
-        - efficiency: 0-1，sirnamod 预测抑制率 / 100
-        - sirnamod_inhibition_pct: 原始预测抑制率 %
-        - mod_label: 修饰模式描述
+        - efficiency: 0-1, sirnamod predicted inhibition rate / 100
+        - sirnamod_inhibition_pct: raw predicted inhibition rate %
+        - mod_label: modification-pattern description
+
+    NOTE: "corrected" in the summary line corresponds to no correction step in
+    the code -- the efficiency returned is exactly the predicted inhibition
+    rate divided by 100. `mod_label` is likewise the pattern NAME (`mod_pattern`
+    itself, or "unmodified"), not a description of the pattern.
     """
     if mod_pattern and mod_pattern in MOD_PATTERNS:
         sense_mods, antisense_mods = MOD_PATTERNS[mod_pattern](sense_seq)
@@ -126,5 +167,5 @@ def predict_modified_efficiency(sense_seq, antisense_seq, mod_pattern="unmodifie
 
 
 def get_mod_pattern_names():
-    """返回支持的修饰模式名列表。"""
+    """Return the list of supported modification-pattern names."""
     return list(MOD_PATTERNS.keys())

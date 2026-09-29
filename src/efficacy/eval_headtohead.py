@@ -50,7 +50,7 @@ CKPT = os.path.abspath(os.path.join(HERE, "..", "..", "results", "efficacy_v1",
                                     "ckpt_efficacy_v1.pt"))
 ESM_TABLE = te.ESM_TABLE
 
-# ---------- 数据与 split ----------
+# ---------- data and split ----------
 df = pd.read_parquet(str(te.DATA / "aso_atlas_clean.parquet"))
 print(f"rows={len(df):,}", flush=True)
 train_df, inner_val, val_group, val_gene, holdout_genes = te.build_split(
@@ -68,15 +68,15 @@ print(f"common rows (16-20nt): val_group={len(vg):,} val_gene={len(vgene):,}", f
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"device={device}", flush=True)
 
-# ---------- transformer (efficacy_v1, 现役 ckpt) ----------
+# ---------- transformer (efficacy_v1, in-service ckpt) ----------
 ck = torch.load(CKPT, map_location="cpu", weights_only=False)
 tab = torch.load(ESM_TABLE, map_location="cpu", weights_only=False)
 symbols = list(tab.keys())
 esm = torch.stack([v.float() for v in tab.values()])
 gene2row = {s: i for i, s in enumerate(symbols)}
-gene2row["UNKNOWN"] = 0            # te.evaluate 的 default 急切求值需要键存在（cov 过滤后不会命中）
+gene2row["UNKNOWN"] = 0            # te.evaluate's eager default needs this key (never hit after cov)
 n_cell = ck["model_state_dict"]["cell_emb.weight"].shape[0]
-ck["cell2id"].setdefault("UNKNOWN", n_cell - 1)  # 末行未知回退保留位
+ck["cell2id"].setdefault("UNKNOWN", n_cell - 1)  # last row = reserved unknown-fallback slot
 # honours the checkpoint's arch_config, so a pre-v4 (position-free,
 # legacy-vocabulary) checkpoint is rebuilt as itself rather than
 # reinterpreted under the current layout
@@ -97,11 +97,13 @@ m_t_gene_c = te.evaluate(model, vgene, gene2row, ck["cell2id"], device, ck["dose
 print(f"[transformer] val_group {m_t_group} | val_gene {m_t_gene}", flush=True)
 print(f"[transformer] common(16-20) group {m_t_group_c} | gene {m_t_gene_c}", flush=True)
 
-# ---------- XGBoost（同 train 重训） ----------
-from utils.aso_features import extract_aso_features_full  # 39 序列维 + 占位 8 化学维
+# ---------- XGBoost (retrained the same way as train) ----------
+from utils.aso_features import extract_aso_features_full  # 39 seq dims + 8 placeholder chem dims
 
 def chem8(sugar_seq, bb_seq, L):
-    """从 parquet sugar/backbone 串等价重建 extract_chemistry_features 的 8 维。"""
+    """Equivalently rebuild extract_chemistry_features' 8 dims from the
+    parquet sugar/backbone strings.
+    """
     su = str(sugar_seq).split(",")[:L]
     bbs = str(bb_seq).split(",")[:L]
     mod_pos = {i + 1: tok for i, tok in enumerate(su) if tok != "DNA"}
