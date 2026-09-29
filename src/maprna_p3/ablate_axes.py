@@ -79,6 +79,8 @@ from train_p3 import build_dev_data, make_rna_emb_lookup  # noqa: E402
 from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
 from eval_metrics import (  # noqa: E402
     bootstrap_ci_per_item, per_item_correlation, pooled_correlation, top_k_overlap)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from provenance import write_json  # noqa: E402
 
 
 def parse_args():
@@ -236,10 +238,10 @@ def main():
               flush=True)
 
     if args.out_json:
-        with open(args.out_json, "w") as f:
-            json.dump(dict(report=report, n_test=n, split_by=args.split_by,
-                           measured_fraction=float(mask.mean()),
-                           ckpt=os.path.abspath(args.ckpt)), f, indent=2)
+        write_json(args.out_json,
+                   dict(report=report, n_test=n, split_by=args.split_by,
+                        measured_fraction=float(mask.mean()),
+                        ckpt=os.path.abspath(args.ckpt)), args=args)
         print(f"wrote {args.out_json}", flush=True)
 
 

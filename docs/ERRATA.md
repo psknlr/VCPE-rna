@@ -456,7 +456,29 @@ Ordered by what most constrains any claim the project can make:
    the gate (which would repeat E7). **Not yet run on real data.**
 5. Report the positional-embedding ablation (E9) rather than assuming position
    matters.
-6. Near-duplicate sequence analysis for ASO Atlas: patent families republish
-   identical sequences and tile targets with single-nucleotide shifts, so
-   exact-match de-duplication is a lower bound.
+6. ~~Near-duplicate sequence analysis for ASO Atlas~~ — **implemented**
+   (`src/efficacy/seq_dedup.py`, plus `--near_dup_check` in
+   `train_efficacy.py`). Patent families republish identical sequences and tile
+   targets one nucleotide at a time, so exact-match de-duplication is a lower
+   bound. Two sequences are treated as near-duplicates when the shorter is
+   contained in the longer up to a length threshold — the relation that catches
+   a shift of any size and a trim at either end, which whole-string edit
+   distance does not (a 1-nt shift has edit distance 2 but is the same binding
+   site). Candidate pairs come from a k-mer inverted index and comparisons are
+   confined to a shared target gene. The script reports, per candidate grouping
+   column, how many near-duplicate pairs **cross** a group boundary — i.e. how
+   many would survive a grouped split. A grouping column only controls leakage
+   if that count is small. **Not yet run on ASO Atlas**, which the repository
+   does not ship.
 7. Multi-seed runs everywhere; single-run point estimates should not be quoted.
+   (`--seeds` exists on the ASO CV; the response line still runs one seed at a
+   time.)
+8. ~~Result provenance~~ — **implemented** (`src/provenance.py`). Every result
+   file now carries the git revision and whether the tree was dirty, the exact
+   command line, all parsed arguments (so the split, the seeds and every
+   protocol switch travel with the number), the resolved versions of the
+   packages that affect numerics, and the platform. None of the pre-v4 result
+   files can be tied to a revision or an environment: the history is one
+   squashed commit, nothing but torch was pinned, and E11 records a committed
+   JSON whose schema does not match the committed script said to have produced
+   it.

@@ -25,6 +25,7 @@ Errata for previously published numbers (see `errata` in the output JSON):
 CPU budget: 5 folds x 8 epochs x ~110s ≈ 1.5h per seed. Runs on GPU when available.
 """
 import argparse
+import sys
 import json
 import re
 import time
@@ -38,6 +39,9 @@ torch.set_num_threads(8)
 from scipy.stats import spearmanr, pearsonr
 
 from model_efficacy import MAX_LEN
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from provenance import write_json  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE.parent.parent / "data" / "aso_atlas_2"
@@ -455,8 +459,7 @@ def main():
           f"pooled Spearman {summary['across_seeds']['pooled_spearman_mean']:.4f} | "
           f"per-screen median {summary['across_seeds']['per_screen_median_mean']:.4f}",
           flush=True)
-    with open(out_dir / f"cv_results_{tag}.json", "w") as f:
-        json.dump(summary, f, indent=2)
+    write_json(str(out_dir / f"cv_results_{tag}.json"), summary, args=args)
     print(f"   wrote {out_dir / f'cv_results_{tag}.json'}", flush=True)
 
 

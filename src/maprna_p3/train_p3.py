@@ -36,6 +36,8 @@ from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E
 from baselines import run_all  # noqa: E402
 from eval_metrics import (  # noqa: E402
     per_item_correlation, pooled_correlation, top_k_overlap)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from provenance import write_json  # noqa: E402
 
 
 def parse_args():
@@ -565,8 +567,7 @@ def main():
 
     ck["metrics"] = final
     torch.save(ck, ckpt_path)
-    with open(os.path.join(args.out_dir, "final_report.json"), "w") as f:
-        json.dump(final, f, indent=2)
+    write_json(os.path.join(args.out_dir, "final_report.json"), final, args=args)
     with open(log_path, "a") as f:
         f.write(json.dumps({"final": final}) + "\n")
     print("DONE", flush=True)

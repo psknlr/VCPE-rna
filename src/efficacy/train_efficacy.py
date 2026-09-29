@@ -23,6 +23,7 @@ top-5% selection on unseen target genes was indistinguishable from chance.
 Runs on CPU in ~15-30 min (small model); uses CUDA when available.
 """
 import argparse
+import sys
 import json
 import time
 from pathlib import Path
@@ -34,6 +35,9 @@ import torch.nn as nn
 from scipy.stats import spearmanr, pearsonr
 
 from model_efficacy import EfficacyHead, BASES, SUGARS, BACKBONES, MAX_LEN
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from provenance import write_json  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE.parent.parent / "data" / "aso_atlas"
@@ -55,6 +59,12 @@ def parse_args():
                    default=True,
                    help="ablate the positional embedding, reproducing the pre-v4 "
                         "bag-of-triples sequence encoder")
+    p.add_argument("--near_dup_check", action="store_true",
+                   help="also count held-out rows that share a long exact "
+                        "substring with a training row on the same target "
+                        "(catches patent-family re-files and single-nucleotide "
+                        "target walking that exact matching misses). Slower.")
+    p.add_argument("--near_dup_threshold", type=float, default=0.9)
     p.add_argument("--group_col", type=str, default="custom_id",
                    help="column defining the held-out group. ASO Atlas's "
                         "custom_id is the source patent TABLE, not the patent; "
@@ -123,22 +133,70 @@ def build_split(df, seed, n_holdout_genes, group_col="custom_id", inner_val_frac
     return train, inner_val, val_group, val_gene, holdout_genes
 
 
-def report_sequence_overlap(train, parts, seq_col="aso_sequence_5_to_3"):
-    """Exact-sequence overlap between train and each held-out slice.
+def report_sequence_overlap(train, parts, seq_col="aso_sequence_5_to_3",
+                            target_col="target_gene", near_dup=False,
+                            threshold=0.9, sample=4000, seed=0):
+    """Sequence-level overlap between train and each held-out slice.
 
-    ASO patent families republish identical sequences and tile a target with
-    single-nucleotide shifts, so a group-wise split does not by itself imply
-    sequence-level separation. This reports the exact-match component; it does
-    NOT detect near-duplicate tiling, which needs an alignment-based check.
+    A grouped split controls leakage only if it also separates sequences. Two
+    processes in ASO patent corpora defeat that:
+
+      * family republication -- the same string re-filed under another patent or
+        another source table;
+      * target walking -- a ladder of oligonucleotides offset one nucleotide at a
+        time, which are different strings covering the same binding site.
+
+    The exact-match count is therefore a LOWER BOUND. With `near_dup=True` this
+    also counts held-out sequences that share a long exact substring with a
+    training sequence against the same target, which is the relation that catches
+    walking and end-trimming (see seq_dedup.py). That search is quadratic in the
+    per-target candidate set, so it runs on a subsample by default.
     """
-    tr_seqs = set(train[seq_col].astype(str))
+    tr_seqs = set(train[seq_col].astype(str).str.upper())
     out = {}
     for name, part in parts.items():
-        s = part[seq_col].astype(str)
+        s = part[seq_col].astype(str).str.upper()
         n_ov = int(s.isin(tr_seqs).sum())
-        out[name] = dict(n=int(len(s)), n_exact_in_train=n_ov,
-                         frac_exact_in_train=round(n_ov / max(1, len(s)), 4))
+        rec = dict(n=int(len(s)), n_exact_in_train=n_ov,
+                   frac_exact_in_train=round(n_ov / max(1, len(s)), 4))
+        if near_dup and len(s):
+            rec.update(_near_dup_overlap(train, part, seq_col, target_col,
+                                         threshold, sample, seed))
+        out[name] = rec
     return out
+
+
+def _near_dup_overlap(train, part, seq_col, target_col, threshold, sample, seed):
+    """Count held-out rows with a near-duplicate training sequence on the same target."""
+    from seq_dedup import is_near_duplicate
+
+    rng = np.random.default_rng(seed)
+    te = part[[seq_col, target_col]].copy()
+    if sample and len(te) > sample:
+        te = te.sample(sample, random_state=seed)
+    by_target = {}
+    for t, g in train.groupby(train[target_col].astype(str)):
+        by_target[t] = [str(x).upper() for x in g[seq_col].astype(str)]
+
+    hits = 0
+    checked = 0
+    for _, r in te.iterrows():
+        pool = by_target.get(str(r[target_col]))
+        if not pool:
+            continue
+        checked += 1
+        if len(pool) > 400:                       # cap the per-row comparison cost
+            pool = list(rng.choice(pool, 400, replace=False))
+        s = str(r[seq_col]).upper()
+        if any(is_near_duplicate(s, o, threshold) for o in pool):
+            hits += 1
+    return dict(near_dup_threshold=threshold,
+                near_dup_rows_checked=checked,
+                near_dup_rows_with_train_match=hits,
+                frac_near_dup_in_train=(round(hits / checked, 4) if checked else None),
+                near_dup_note=("counts held-out rows sharing a long exact substring "
+                               "with a training row against the same target; "
+                               "subsampled, so treat as an estimate"))
 
 
 def evaluate(model, df_part, gene2row, cell2id, device, dose_mu,
@@ -236,7 +294,8 @@ def main():
           f"gene-holdout={len(val_gene)} ({len(holdout_genes)} genes: "
           f"{sorted(holdout_genes)[:6]}...)", flush=True)
     overlap = report_sequence_overlap(
-        train, {"inner_val": inner_val, "val_group": val_group, "val_gene": val_gene})
+        train, {"inner_val": inner_val, "val_group": val_group, "val_gene": val_gene},
+        near_dup=args.near_dup_check, threshold=args.near_dup_threshold)
     print(f"[leakage-check] exact-sequence overlap with train: "
           f"{json.dumps(overlap)}", flush=True)
 
@@ -331,8 +390,7 @@ def main():
     print(f"[FINAL ep{best_ep}] {json.dumps(final, indent=2)}", flush=True)
     with open(log_path, "a") as f:
         f.write(json.dumps({"final": final}) + "\n")
-    with open(Path(args.out_dir) / "final_report.json", "w") as f:
-        json.dump(final, f, indent=2)
+    write_json(str(Path(args.out_dir) / "final_report.json"), final, args=args)
     # Re-save the checkpoint with the reported metrics attached, so that anything
     # loading it (e.g. predict_service) advertises held-out numbers rather than
     # the selection slice's.
