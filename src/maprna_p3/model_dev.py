@@ -89,13 +89,28 @@ class DeviationModel(nn.Module):
         return self.rna_encoder(rna_tokens, rna_mask)           # [Bp, rna_d]
 
     def forward(self, pert_rows, ds_idx, ctrl_feat, rna_emb=None,
-                pert_esm_override=None, pert_ctrl_expr=None):
+                pert_esm_override=None, pert_ctrl_expr=None,
+                is_tgt_override=None, is_nb_override=None):
         """pert_rows [Bp] long; ds_idx [Bp] long; ctrl_feat [Bp, n_hvg] float.
 
         pert_esm_override: [Bp, esm_dim] replacement for the target ESM2 vector
         (ablation entry: zeros / shuffled rows).
         pert_ctrl_expr: [Bp] float, RAW log1p ctrl expression of the target gene
         (v2-1a self-response gate; None = gate off, backward compatible).
+
+        is_tgt_override / is_nb_override: [Bp, n_hvg] replacements for the
+        "this gene is the target" and "this gene is a STRING neighbour of the
+        target" indicator features. These exist because perturbation identity
+        reaches the model through FOUR channels -- the target ESM2 vector, the
+        RNA sequence embedding, and these two indicators -- so overriding the
+        ESM2 vector alone does not switch conditioning off. The P2.3-B report
+        acknowledged this ("the neighbor/self indicator features still carry
+        perturbation identity; per-axis ablation is future work") but no hook
+        existed to test it. See ablate_axes.py.
+
+        Note: the v2-1a expression gate stays keyed to the TRUE is_target, since
+        it is a structural post-hoc prior rather than a conditioning channel.
+        Ablating the indicator feature must not silently also move the gate.
         """
         Bp = pert_rows.shape[0]
         dev = self.esm_table.device
@@ -125,6 +140,11 @@ class DeviationModel(nn.Module):
         else:
             is_nb = torch.zeros(Bp, self.n_hvg, dtype=torch.bool, device=dev)
         is_tgt = (pert_rows.unsqueeze(-1) == self.hvg_rows.view(1, -1))           # [Bp, n_hvg]
+        is_tgt_true = is_tgt                       # kept for the gate, never ablated
+        if is_tgt_override is not None:
+            is_tgt = is_tgt_override.to(dev)
+        if is_nb_override is not None:
+            is_nb = is_nb_override.to(dev)
         ds_onehot = self.ds_emb(ds_idx)                                           # [Bp, DS_EMB]
 
         feats = [ctrl_feat.unsqueeze(-1),
@@ -138,8 +158,25 @@ class DeviationModel(nn.Module):
         # expr <= 0.1 (log1p) -> gate ~0.05; expr >= 1.3 -> gate ~0.97.
         if pert_ctrl_expr is not None:
             gate = torch.sigmoid((pert_ctrl_expr.to(dev) - GATE_TAU) * GATE_SLOPE)  # [Bp]
-            out = out * (1.0 - is_tgt.float() * (1.0 - gate).unsqueeze(-1))
+            out = out * (1.0 - is_tgt_true.float() * (1.0 - gate).unsqueeze(-1))
         return out
+
+    def indicator_features(self, pert_rows):
+        """Return the (is_neighbor, is_target) indicator matrices the forward pass
+        would build for `pert_rows`. Exposed so that ablations can permute them
+        across perturbations rather than reconstructing the logic."""
+        dev = self.esm_table.device
+        pert_rows = pert_rows.to(dev)
+        Bp = pert_rows.shape[0]
+        nb = self.neighbor_table[pert_rows] \
+            if getattr(self, "neighbor_table", None) is not None \
+            else torch.full((Bp, 0), -1, device=dev, dtype=torch.long)
+        if nb.shape[1] > 0:
+            is_nb = (nb.unsqueeze(-1) == self.hvg_rows.view(1, 1, -1)).any(dim=1)
+        else:
+            is_nb = torch.zeros(Bp, self.n_hvg, dtype=torch.bool, device=dev)
+        is_tgt = (pert_rows.unsqueeze(-1) == self.hvg_rows.view(1, -1))
+        return is_nb, is_tgt
 
     def set_neighbor_table(self, table_np, device):
         import numpy as np

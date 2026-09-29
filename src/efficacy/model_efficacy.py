@@ -65,29 +65,56 @@ def vocabs(legacy=False):
     return BASES, SUGARS, BACKBONES
 
 
+def infer_arch_config(state_dict):
+    """Infer the architecture switches from the weight shapes themselves.
+
+    Preferred over trusting a stored field, because the shapes cannot disagree
+    with the weights:
+
+      * `pos_emb.weight` present  <-> positional embeddings were used
+      * `base_emb.weight` row count distinguishes the vocabularies: the legacy
+        (<= v3) tables have no PAD row, so they are one shorter
+
+    A pre-v4 checkpoint loaded under the current vocabularies would silently
+    reinterpret every base/sugar/backbone index by one position, which is why
+    this is detected rather than assumed.
+    """
+    n_base = state_dict["base_emb.weight"].shape[0]
+    legacy = n_base == len(set(LEGACY_BASES.values()))
+    return dict(use_pos_emb="pos_emb.weight" in state_dict,
+                legacy_vocab=bool(legacy), max_len=MAX_LEN)
+
+
 def load_efficacy_head(ckpt, esm_matrix, n_cell_lines, strict=True):
     """Rebuild an EfficacyHead from a checkpoint dict, honouring its architecture.
 
-    Checkpoints written by v4+ carry `arch_config`. Anything older predates both
-    the positional embedding and the PAD-index fix, so it is reconstructed in
-    legacy mode with a warning -- loading such a checkpoint into the current
-    architecture would silently reinterpret every sugar/backbone index.
+    The layout is inferred from the weight shapes (see `infer_arch_config`). A
+    stored `arch_config` is used only as a cross-check; if the two disagree the
+    weights win and the discrepancy is reported, since a stale or hand-edited
+    field should not be able to change how weights are interpreted.
 
-    Also tolerates the `esm_table` entry that older checkpoints carry: the ESM2
+    Also tolerates the `esm_table` entry that pre-v4 checkpoints carry: the ESM2
     table is a frozen copy of a public lookup table and is now a non-persistent
     buffer, which removes ~400 MB of redundant bytes from every checkpoint.
     """
-    cfg = ckpt.get("arch_config")
-    if cfg is None:
-        cfg = dict(use_pos_emb=False, legacy_vocab=True)
-        print("[efficacy] checkpoint has no arch_config: assuming pre-v4 layout "
-              "(no positional embedding, legacy vocabularies). Predictions from "
-              "it are bag-of-triples over chemistry, not position-aware.",
-              flush=True)
-    model = EfficacyHead(esm_matrix, n_cell_lines=n_cell_lines,
-                         use_pos_emb=cfg.get("use_pos_emb", False),
-                         legacy_vocab=cfg.get("legacy_vocab", True))
     sd = {k: v for k, v in ckpt["model_state_dict"].items() if k != "esm_table"}
+    cfg = infer_arch_config(sd)
+    stored = ckpt.get("arch_config")
+    if stored is not None:
+        for key in ("use_pos_emb", "legacy_vocab"):
+            if key in stored and bool(stored[key]) != cfg[key]:
+                print(f"[efficacy] arch_config says {key}={stored[key]} but the "
+                      f"weights say {cfg[key]}; trusting the weights.", flush=True)
+    elif cfg["legacy_vocab"] or not cfg["use_pos_emb"]:
+        print("[efficacy] pre-v4 checkpoint layout detected"
+              f" (legacy_vocab={cfg['legacy_vocab']}, "
+              f"use_pos_emb={cfg['use_pos_emb']}). Without positional "
+              "embeddings the sequence branch is a bag of (base, sugar, "
+              "backbone) triples and cannot represent where a modification "
+              "sits.", flush=True)
+    model = EfficacyHead(esm_matrix, n_cell_lines=n_cell_lines,
+                         use_pos_emb=cfg["use_pos_emb"],
+                         legacy_vocab=cfg["legacy_vocab"])
     model.load_state_dict(sd, strict=strict)
     return model, cfg
 

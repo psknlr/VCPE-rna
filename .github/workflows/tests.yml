@@ -66,3 +66,22 @@ jobs:
               print(f"UNRESOLVED {f}: {m}")
           sys.exit(1 if bad else 0)
           PY
+
+  pipeline:
+    # End-to-end smoke test on synthetic data: needs torch + anndata but no real
+    # assets. Catches the class of defect that unit tests cannot see -- a split
+    # that leaks, a mask that is not applied, an ablation that varies two things
+    # at once (see docs/ERRATA.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU torch and data deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy scipy pandas anndata h5py pytest
+      - name: Run forward-pass and pipeline tests
+        run: python -m pytest tests/test_model_forward.py tests/test_pipeline_smoke.py -q

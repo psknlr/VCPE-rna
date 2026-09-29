@@ -230,7 +230,13 @@ will not match the withdrawn figures in earlier tags.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q          # metric-definition regression tests, no data needed
+
+# 50 tests, no data or checkpoint assets needed. Includes an end-to-end smoke
+# test on synthetic Perturb-seq data that asserts the grouped split holds
+# genes out, the measured-column mask is applied, the test split is scored
+# exactly once, and the per-axis ablation separates live conditioning
+# channels from inert ones.
+python -m pytest tests/ -q
 
 # 1) Prepare data (see data/README.md):
 #    - Perturb-seq h5ad in GEARS format (adamson / norman / replogle_rpe1_essential)
@@ -262,7 +268,15 @@ python src/efficacy/train_efficacy_v2.py --seeds 0 1 2 3 4 --no_pos_emb
 python src/efficacy/sirnamod_model.py --also_random_cv \
   --save_model data/drive_weights/sirnamod_xgb_v2.joblib
 
-# 6) Full chain (P1/P2 need the MAP base + SE weights, 1 × 24G GPU)
+# 6) Per-axis conditioning ablation. --split_by must match step 2.
+#    Reports each channel separately (target ESM2 vector, RNA embedding,
+#    is_target, is_neighbor, ds embedding) plus an all-off floor. The only
+#    defensible conditioning claim is the gap from that floor.
+python src/maprna_p3/ablate_axes.py --ckpt ./p3_out/ckpt_p3_best_dev.pt \
+  --data_dirs ... --esm_table ... --split_by target_gene \
+  --out_json ablation_report.json
+
+# 7) Full chain (P1/P2 need the MAP base + SE weights, 1 × 24G GPU)
 #    Command templates live in each script's docstring and in docs/PLAN.md
 ```
 

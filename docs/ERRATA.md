@@ -369,6 +369,43 @@ file for it has ever been committed.
 
 ---
 
+## How the fixes were verified
+
+No real data or released checkpoint was available while making these changes, so
+verification is by construction rather than by reproducing a published number:
+
+* **50 tests**, up from zero. `tests/test_metrics.py` and
+  `tests/test_eval_metrics.py` pin E1, E2, E4 and E6 numerically (e.g. a
+  300-replicate Monte Carlo confirming that the corrected enrichment centres on
+  1.0 under random ranking). `tests/test_model_forward.py` exercises both heads
+  on synthetic tensors and asserts that the ASO encoder is now order-sensitive
+  while the legacy configuration is provably invariant to reversal — the
+  mechanical statement of E9. `tests/test_baselines.py` pins the self-retrieval
+  exclusion.
+* **An end-to-end smoke test** (`tests/test_pipeline_smoke.py`) builds two
+  synthetic GEARS-format datasets with different gene panels and overlapping
+  target genes, then runs training and the ablation as subprocesses. It asserts
+  the grouped split holds genes out, the mask is partial and reported, the test
+  split is scored exactly once, the baselines appear beside the model, and the
+  ablation distinguishes a live conditioning channel from an inert one. Every
+  defect in this file was of a kind that only shows up when the pieces run
+  together.
+* **A static name-resolution check** in CI, because `py_compile` does not catch a
+  missing import — it was added after exactly that class of bug was found twice
+  (E12c, and once in this work's own first draft).
+* CI runs the metric tests plus a byte-compile on every push, and the
+  forward-pass and pipeline tests in a job with CPU torch installed.
+
+What this does **not** establish: any statement about performance. The smoke test
+uses 60 synthetic genes and asserts plumbing, not accuracy.
+
+One incidental finding from the synthetic run is worth recording, because it
+illustrates why the protocol changes matter: with the gene-grouped split, the
+inner-validation `pearson_dev` climbed to ~0.57 while the held-out-gene value sat
+at ~0.00 and lost to the k-nearest-neighbour control. On synthetic data that is
+not a result about biology — but under the pre-v4 protocol the same run would
+have reported the 0.57.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically
@@ -406,9 +443,17 @@ Ordered by what most constrains any claim the project can make:
 2. Re-run every reported number under the corrected protocol and replace the
    withdrawn figures.
 3. Quantify E6 on real data (masked vs unmasked, same checkpoint).
-4. Per-axis ablations: shuffle `is_target` / `is_neighbor`, and a `ds`-shuffle
-   control for dataset-level residual commonality (acknowledged as future work
-   in the P2.3-B report and still outstanding).
+4. ~~Per-axis ablations~~ — **implemented** (`src/maprna_p3/ablate_axes.py`).
+   Perturbation identity reaches the model through four channels (target ESM2
+   vector, RNA embedding, `is_target`, `is_neighbor`) plus the `ds` embedding;
+   the old single `ablation_r` zeroed only the first. The script now runs each on
+   its own plus an all-off floor, reporting both `r_vs_real` and the held-out
+   `pearson_dev` under each ablation, and states the only defensible
+   conditioning claim: the gap between the intact model and the no-conditioning
+   floor. Model hooks (`is_tgt_override`, `is_nb_override`,
+   `indicator_features`) were added for this; the v2-1a expression gate stays
+   keyed to the true `is_target` so that ablating the feature does not also move
+   the gate (which would repeat E7). **Not yet run on real data.**
 5. Report the positional-embedding ablation (E9) rather than assuming position
    matters.
 6. Near-duplicate sequence analysis for ASO Atlas: patent families republish

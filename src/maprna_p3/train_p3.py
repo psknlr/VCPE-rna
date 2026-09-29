@@ -349,7 +349,12 @@ def evaluate(model, data, split, device, esm_override_mode=None):
         return float((d2.sum(axis=1) / denom).mean())
 
     def _per_item(pred, true, k=50):
-        """Per-perturbation Pearson and top-k overlap over measured columns only."""
+        """Per-perturbation Pearson and top-k overlap over measured columns only.
+
+        The top-k term is skipped for items with fewer than 2k measured columns:
+        taking the top n of n gives 1.0 by construction, which reads as a perfect
+        score while carrying no information.
+        """
         prs, tops = [], []
         for b in range(len(true)):
             m = mask[b]
@@ -360,12 +365,13 @@ def evaluate(model, data, split, device, esm_override_mode=None):
                 prs.append(float(np.corrcoef(t, p)[0, 1]))
             else:
                 prs.append(0.0)
-            kk = min(k, len(t))
-            tops.append(len(set(np.argsort(-np.abs(t))[:kk])
-                            & set(np.argsort(-np.abs(p))[:kk])) / kk)
+            if len(t) >= 2 * k:
+                tops.append(len(set(np.argsort(-np.abs(t))[:k])
+                                & set(np.argsort(-np.abs(p))[:k])) / k)
         if not prs:
             return float("nan"), float("nan"), 0
-        return float(np.mean(prs)), float(np.mean(tops)), len(prs)
+        top = float(np.mean(tops)) if tops else float("nan")
+        return float(np.mean(prs)), top, len(prs)
 
     out["mse_DE"] = _masked_mse(pred_fc, fc)
     out["mse_DE_baseline_ctrl"] = _masked_mse(np.zeros_like(fc), fc)

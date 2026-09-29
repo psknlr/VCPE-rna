@@ -58,11 +58,19 @@ def per_item_correlation(true_mat, pred_mat, mask=None, min_features=10):
     return float(np.mean(rs)) if rs else float("nan")
 
 
-def top_k_overlap(true_mat, pred_mat, k=50, mask=None):
-    """Mean overlap of the top-k largest-|value| features, per item."""
+def top_k_overlap(true_mat, pred_mat, k=50, mask=None, min_ratio=2):
+    """Mean overlap of the top-k largest-|value| features, per item.
+
+    Returns NaN for items where `k` is not meaningfully smaller than the number
+    of measured features: selecting the top n out of n gives an overlap of 1.0 by
+    construction, so the metric is vacuous rather than perfect. `min_ratio`
+    requires at least that many measured features per selected one. This matters
+    because the measured-column mask can shrink an item's feature count well
+    below the nominal panel size.
+    """
     outs = []
     for x, y in _rows(true_mat, pred_mat, mask):
-        if x.size < 2:
+        if x.size < max(2, k * min_ratio):
             continue
         kk = min(k, x.size)
         outs.append(len(set(np.argsort(-np.abs(x))[:kk])
