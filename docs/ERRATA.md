@@ -479,15 +479,36 @@ baselines and the per-axis ablation table.
 
 Ordered by what most constrains any claim the project can make:
 
-1. Run real external baselines. The **cheap controls are now implemented**
-   (`src/maprna_p3/baselines.py`: predict-no-change, train-mean,
-   k-nearest-neighbour over frozen ESM2, and closed-form ridge) and
-   `train_p3.py` reports them beside the model on the same split, the same mask
-   and the same metrics, printing a warning when the learned head fails to beat
-   one. They have **not yet been run on real data**, so it remains unestablished
-   that a 5.7M-parameter conditioned head beats nearest-neighbour retrieval over
-   the embeddings it is conditioned on. Running GEARS, and
-   OligoAI/ASOptimizer/OligoWalk for the ASO head, is still outstanding.
+1. Run real external baselines. **GEARS now runs for real**
+   (`src/maprna_p3/baseline_gears.py`), on VCPE's exact split (via GEARS's
+   `split='custom'` mechanism), VCPE's HVG panel and mask, VCPE's residual
+   target, and VCPE's estimators. The cheap controls
+   (`src/maprna_p3/baselines.py`) report alongside. Verified end to end on
+   synthetic data with real gene symbols: GEARS trains, predicts, and is scored
+   against the VCPE head on identical footing.
+
+   Two things matter for anyone using it. First, **GEARS's expression prediction
+   is converted to the same residual VCPE predicts** (fc against the same control
+   mean, minus the same train-only common core); scoring raw expression against a
+   residual would flatter GEARS enormously, because the shared response dominates
+   raw expression -- the P2 finding applied to a baseline comparison. Second,
+   what is *not* controlled is stated in the script and in its output:
+   GEARS runs at defaults while VCPE's hyperparameters were tuned on this data
+   over many runs, and GEARS at defaults is far larger than the 5.7M-parameter
+   head.
+
+   Practical obstacle worth recording: **GEARS is broken on a current
+   scipy/pandas**, and inconsistently so. `get_dropout_non_zero_genes` and
+   `get_coexpression_network_from_train` call `X.toarray()` (X must be sparse),
+   while `GEARS.__init__` indexes X with a pandas boolean Series (which current
+   scipy rejects for a sparse matrix). The adapter densifies for the constructor
+   only and restores the sparse matrix; the alternative is an older scipy. A
+   GEARS comparison is not reproducible today without one of the two, and which
+   was used belongs next to the number.
+
+   Still outstanding: **it has not been run on real Perturb-seq data**, and
+   scGPT, CPA, AIDO.RNA-Pert, OligoAI, ASOptimizer, OligoWalk and RNAGenesis
+   remain unrun.
 2. Re-run every reported number under the corrected protocol and replace the
    withdrawn figures.
 3. Quantify E6 on real data: a `--no_mask` A/B on one checkpoint. The harness

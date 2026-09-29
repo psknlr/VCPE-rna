@@ -1,0 +1,361 @@
+#!/usr/bin/env python
+"""GEARS as an external baseline, on VCPE's split, panel and metrics.
+
+Why this script exists
+----------------------
+This repository quoted GEARS, scGPT, CPA and AIDO.RNA-Pert from their papers and
+never ran any of them (docs/ERRATA.md E10). Quoting a number obtained under a
+different split, a different gene space and a different estimator is not a
+comparison. This runs GEARS for real and scores it the same way the VCPE head is
+scored.
+
+What makes the comparison fair, and what still does not
+-------------------------------------------------------
+Four things are forced to match, because each of them can move a number more than
+the architectural difference being tested:
+
+1. **The split.** GEARS is given VCPE's exact train/val/test condition sets via
+   its `split='custom'` mechanism, so both models hold out the same
+   perturbations. With `--split_by target_gene` that means the same held-out
+   *genes*, which is the only split under which either model's number describes
+   generalisation (E5).
+
+2. **The predicted quantity.** VCPE predicts a residual: `dev = fc - common_fc`,
+   where `fc` is the log fold-change against the dataset's control mean and
+   `common_fc` is the *train-only* mean fold-change. GEARS predicts
+   post-perturbation expression. Its output is therefore converted the same way:
+   expression -> fc against the same control mean -> minus the same train-only
+   `common_fc`. Comparing GEARS's raw expression correlation against VCPE's
+   residual correlation would flatter GEARS enormously, because the shared
+   response dominates raw expression -- which is the entire lesson of the P2
+   erratum.
+
+3. **The gene space and the mask.** Scored on VCPE's HVG panel only, with the
+   same measured-column mask, so neither model is credited for columns its
+   dataset never measured (E6).
+
+4. **The estimator.** The same `per_item_correlation` / `pooled_correlation` /
+   `top_k_overlap` functions, named explicitly (E4).
+
+What is *not* controlled, and must be reported alongside any result:
+
+* **Tuning effort.** GEARS is run at its defaults. VCPE's hyperparameters were
+  chosen against this data over many runs. That asymmetry favours VCPE, and no
+  amount of protocol alignment removes it -- the honest fix is a tuning budget
+  for both, which this script does not attempt.
+* **GEARS's own preprocessing.** `PertData` recomputes DE genes and its own
+  perturbation graph. Those are part of GEARS and are left alone; disabling them
+  would not be "GEARS".
+* **Capacity.** GEARS at defaults is far larger than the 5.7M-parameter VCPE
+  head. If VCPE wins, it wins as the smaller model; if it loses, the size
+  difference is an explanation, not an excuse.
+
+Usage
+-----
+    python src/maprna_p3/baseline_gears.py \
+        --data_dirs data/adamson/perturb_processed.h5ad \
+        --esm_table data/drive_weights/...ESM2.pt \
+        --split_by target_gene --epochs 20 \
+        --out_json gears_baseline.json
+
+Single dataset at a time: GEARS's PertData takes one AnnData, so a multi-dataset
+VCPE run has no single GEARS counterpart. Run it per dataset and compare against
+`eval_fair.py`'s per-dataset rows.
+"""
+import argparse
+import contextlib
+import json
+import os
+import pickle
+import sys
+import tempfile
+
+import numpy as np
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "maprna_p1"))
+
+from train_p3 import build_dev_data  # noqa: E402
+from eval_metrics import (  # noqa: E402
+    bootstrap_ci_per_item, per_item_correlation, pooled_correlation, top_k_overlap)
+from provenance import write_json  # noqa: E402
+
+
+@contextlib.contextmanager
+def _dense_X(pert_data, max_dense_gb):
+    """Temporarily densify pert_data.adata.X, then restore the sparse matrix.
+
+    GEARS is internally inconsistent about X's type on a current scipy/pandas,
+    and the requirements alternate:
+
+      * `data_utils.get_dropout_non_zero_genes` (inside `new_data_process`) calls
+        `adata.X.toarray()`           -> X must be SPARSE
+      * `GEARS.__init__` does
+        `self.adata.X[self.adata.obs.condition == 'ctrl']`, indexing with a pandas
+        boolean Series, which current scipy rejects for a sparse matrix
+        ("'Series' object has no attribute 'nonzero'")
+                                      -> X must be DENSE
+      * `utils.get_coexpression_network_from_train` (inside `model_initialize`)
+        calls `X_tr.toarray()`        -> X must be SPARSE again
+
+    So the conversion cannot be done once up front; it has to be scoped to the
+    constructor. This is a version incompatibility inside GEARS, not something
+    this adapter introduces, and it is worth recording: a GEARS comparison is not
+    reproducible on a current environment without either this workaround or a
+    scipy old enough that sparse matrices accept a pandas boolean Series.
+    Whichever was used belongs next to the reported number.
+    """
+    from scipy import sparse as sp
+    original = pert_data.adata.X
+    if sp.issparse(original):
+        need_gb = pert_data.adata.n_obs * pert_data.adata.n_vars * 4 / 1e9
+        if need_gb > max_dense_gb:
+            raise SystemExit(
+                f"GEARS needs a dense X for its constructor on this scipy "
+                f"({need_gb:.1f} GB for {pert_data.adata.n_obs} x "
+                f"{pert_data.adata.n_vars}, limit --max_dense_gb={max_dense_gb}). "
+                f"Raise the limit, pass a pseudobulk-aggregated h5ad, or install a "
+                f"scipy old enough to accept a pandas boolean Series.")
+        print(f"[gears] densifying X ({need_gb:.3f} GB) for the GEARS constructor "
+              f"only", flush=True)
+        pert_data.adata.X = np.asarray(original.todense(), dtype=np.float32)
+    try:
+        yield
+    finally:
+        pert_data.adata.X = original
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--data_dirs", nargs="+", required=True,
+                   help="exactly one h5ad: GEARS's PertData takes a single AnnData")
+    p.add_argument("--esm_table", required=True,
+                   help="only used to rebuild VCPE's split and panel identically")
+    p.add_argument("--n_hvg", type=int, default=2000)
+    p.add_argument("--test_frac", type=float, default=0.15)
+    p.add_argument("--inner_val_frac", type=float, default=0.15)
+    p.add_argument("--split_by", default="target_gene",
+                   choices=["target_gene", "pert"],
+                   help="MUST match the VCPE run being compared against")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--min_cells", type=int, default=3)
+    p.add_argument("--knn_k", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=20)
+    p.add_argument("--hidden_size", type=int, default=64)
+    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--gears_work_dir", default="",
+                   help="scratch directory for PertData; a temporary one by default")
+    p.add_argument("--max_dense_gb", type=float, default=8.0,
+                   help="memory ceiling for the dense-X workaround GEARS "
+                        "needs on current scipy; see the note in main()")
+    p.add_argument("--out_json", default="")
+    return p.parse_args()
+
+
+def vcpe_split_to_gears(train_items, val_items, test_items):
+    """VCPE (dataset_idx, condition) items -> GEARS's {'train','val','test'} dict.
+
+    GEARS keys its split by condition string, so the dataset index is dropped --
+    which is why this script takes a single dataset. `ctrl` is never a member of
+    any split in either framework.
+    """
+    def conds(items):
+        return sorted({c for _, c in items if c.lower() != "ctrl"})
+    return {"train": conds(train_items), "val": conds(val_items),
+            "test": conds(test_items)}
+
+
+def align_to_hvg(pred_expr, gears_gene_names, hvg_symbols):
+    """Project a GEARS prediction onto VCPE's HVG panel by gene symbol.
+
+    Returns (vector over hvg_symbols, boolean found-mask). Genes GEARS does not
+    predict are left at zero and marked absent, so they can be excluded from
+    scoring rather than silently counted as a prediction of no change.
+    """
+    idx = {str(g): i for i, g in enumerate(gears_gene_names)}
+    out = np.zeros(len(hvg_symbols), dtype=np.float32)
+    found = np.zeros(len(hvg_symbols), dtype=bool)
+    for j, sym in enumerate(hvg_symbols):
+        i = idx.get(str(sym))
+        if i is not None:
+            out[j] = pred_expr[i]
+            found[j] = True
+    return out, found
+
+
+def main():
+    args = parse_args()
+    if len(args.data_dirs) != 1:
+        raise SystemExit(
+            "GEARS's PertData takes a single AnnData, so pass exactly one h5ad "
+            "and compare against eval_fair.py's row for that dataset. Got "
+            f"{len(args.data_dirs)}.")
+
+    # ---- 1. rebuild VCPE's split / panel / residual convention identically ----
+    data = build_dev_data(args)
+    hvg_rows = np.asarray(data["hvg_rows"])
+    is_val = data["is_inner_val"]
+    train_items = [it for it, v in zip(data["train_items"], is_val) if not v]
+    val_items = [it for it, v in zip(data["train_items"], is_val) if v]
+    test_items = data["test_items"]
+    print(f"[vcpe] split_by={args.split_by}: train {len(train_items)} / "
+          f"val {len(val_items)} / test {len(test_items)} conditions", flush=True)
+
+    # HVG row ids -> gene symbols, so GEARS's var_names can be aligned to them
+    sym2row = data["sym2row"]
+    row2sym = {r: s for s, r in sym2row.items()}
+    hvg_symbols = [row2sym.get(int(r)) for r in hvg_rows]
+    n_named = sum(1 for s in hvg_symbols if s)
+    print(f"[vcpe] HVG panel: {len(hvg_rows)} rows, {n_named} with a symbol", flush=True)
+
+    # ---- 2. hand GEARS that split verbatim ----
+    work = args.gears_work_dir or tempfile.mkdtemp(prefix="gears_")
+    os.makedirs(work, exist_ok=True)
+    split_dict = vcpe_split_to_gears(train_items, val_items, test_items)
+    split_fp = os.path.join(work, "vcpe_split.pkl")
+    with open(split_fp, "wb") as f:
+        pickle.dump(split_dict, f)
+    print(f"[gears] custom split written: "
+          f"{ {k: len(v) for k, v in split_dict.items()} }", flush=True)
+
+    import anndata as ad
+    from gears import GEARS, PertData
+
+    adata = ad.read_h5ad(args.data_dirs[0])
+    if "gene_name" in adata.var.columns:          # GEARS keys on var_names
+        adata.var_names = adata.var["gene_name"].astype(str)
+        adata.var_names_make_unique()
+    if "cell_type" not in adata.obs.columns:
+        adata.obs["cell_type"] = "cells"           # PertData requires the column
+
+    pert_data = PertData(work)
+    pert_data.new_data_process(dataset_name="vcpe_cmp", adata=adata)
+
+    pert_data.prepare_split(split="custom", split_dict_path=split_fp)
+    pert_data.get_dataloader(batch_size=args.batch_size,
+                             test_batch_size=args.batch_size)
+
+    # ---- 3. train GEARS at its defaults ----
+    # GEARS(...) is the only step that needs a dense X, so densify for exactly
+    # that call and restore the sparse matrix afterwards. See _dense_X.
+    with _dense_X(pert_data, args.max_dense_gb):
+        model = GEARS(pert_data, device=args.device)
+    model.model_initialize(hidden_size=args.hidden_size)
+    print(f"[gears] training {args.epochs} epochs on {args.device} ...", flush=True)
+    model.train(epochs=args.epochs)
+
+    # ---- 4. predict the test conditions ----
+    # GEARS can only predict perturbations present in its perturbation graph,
+    # which is derived from a gene-set / GO resource rather than from the data.
+    # A target gene can therefore be in the training split and still be
+    # unpredictable, so report the coverage before scoring: a low number makes
+    # any resulting metric a statement about a biased subset of the test set.
+    test_genes = [c.split("+")[0] for _, c in test_items]
+    in_graph = [g for g in test_genes if g in set(model.pert_list)]
+    print(f"[gears] perturbation graph: {len(model.pert_list)} genes | test genes "
+          f"in graph: {len(in_graph)}/{len(test_genes)}", flush=True)
+    if not in_graph:
+        raise SystemExit(
+            f"None of the {len(test_genes)} held-out target genes is in GEARS's "
+            f"perturbation graph, so GEARS cannot predict any of them and there is "
+            f"nothing to compare. This is expected for synthetic or non-HGNC gene "
+            f"names. Examples tried: {test_genes[:5]}. Use real gene symbols, or "
+            f"pass a --gene_set_path that covers them.")
+
+    gears_genes = list(pert_data.adata.var_names)
+    ctrl = pert_data.adata[pert_data.adata.obs["condition"] == "ctrl"]
+    ctrl_mean_full = np.asarray(ctrl.X.mean(axis=0)).ravel()
+
+    pred_dev = np.zeros((len(test_items), len(hvg_rows)), dtype=np.float32)
+    found_mask = np.zeros_like(pred_dev, dtype=bool)
+    skipped = []
+    for k, (_, cond) in enumerate(test_items):
+        gene = cond.split("+")[0]
+        try:
+            # GEARS.predict returns (results_pred, results_logvar) only when the
+            # uncertainty head is enabled, and results_pred alone otherwise, so
+            # unpacking a 2-tuple unconditionally fails on the default config.
+            out = model.predict([[gene]])
+            res = out[0] if isinstance(out, tuple) else out
+        except Exception as e:
+            skipped.append((cond, f"{type(e).__name__}: {str(e)[:70]}"))
+            continue
+        key = next(iter(res))
+        expr = np.asarray(res[key]).ravel()
+        # GEARS -> expression aligned to the HVG panel
+        p_expr, f1 = align_to_hvg(expr, gears_genes, hvg_symbols)
+        c_expr, f2 = align_to_hvg(ctrl_mean_full, gears_genes, hvg_symbols)
+        # same conversion VCPE's target uses: fc against ctrl, minus train-only core
+        pred_dev[k] = (p_expr - c_expr) - data["common_fc"]
+        found_mask[k] = f1 & f2
+    if skipped:
+        print(f"[gears] {len(skipped)} test conditions could not be predicted: "
+              f"{skipped[:5]}", flush=True)
+
+    # ---- 5. score with VCPE's mask AND GEARS's coverage ----
+    # Intersecting the two masks is the only honest choice: a column VCPE never
+    # measured has no ground truth, and a column GEARS does not predict has no
+    # prediction. Scoring either as "no change" would credit or penalise a model
+    # for a gene it was never asked about.
+    mask = data["mask_te"] & found_mask
+    true_dev = data["dev_te"]
+    scored = mask.any(axis=1)
+    report = dict(
+        n_test_conditions=int(len(test_items)),
+        n_scored_conditions=int(scored.sum()),
+        n_skipped_not_in_pert_graph=len(skipped),
+        skipped=[c for c, _ in skipped],
+        vcpe_measured_fraction=float(data["mask_te"].mean()),
+        gears_coverage_fraction=float(found_mask.mean()),
+        intersected_mask_fraction=float(mask.mean()),
+        gears=dict(
+            pearson_dev=per_item_correlation(true_dev, pred_dev, mask),
+            pearson_dev_pooled=pooled_correlation(true_dev, pred_dev, mask),
+            top50_dev=top_k_overlap(true_dev, pred_dev, k=50, mask=mask),
+            pearson_dev_ci95=list(bootstrap_ci_per_item(true_dev, pred_dev, mask,
+                                                        n_boot=500, seed=args.seed)),
+        ),
+        config=dict(split_by=args.split_by, seed=args.seed, epochs=args.epochs,
+                    hidden_size=args.hidden_size, device=args.device,
+                    n_hvg=args.n_hvg),
+        fairness_notes=[
+            "GEARS was given VCPE's exact train/val/test condition sets via its "
+            "custom-split mechanism.",
+            "GEARS's expression prediction was converted to the same residual VCPE "
+            "predicts: fc against the same control mean, minus the same train-only "
+            "common core. Comparing raw expression correlation against a residual "
+            "correlation would flatter GEARS, since the shared response dominates "
+            "raw expression.",
+            "Scored on VCPE's HVG panel with VCPE's measured mask intersected with "
+            "GEARS's gene coverage.",
+            "NOT controlled: GEARS runs at defaults while VCPE's hyperparameters "
+            "were tuned on this data over many runs. That asymmetry favours VCPE.",
+            "NOT controlled: GEARS at defaults is far larger than the 5.7M-parameter "
+            "VCPE head.",
+        ],
+    )
+
+    print("\n=== GEARS on VCPE's split, panel and metrics ===", flush=True)
+    g = report["gears"]
+    print(f"  pearson_dev        {g['pearson_dev']:.4f}  "
+          f"CI95 [{g['pearson_dev_ci95'][0]:.4f}, {g['pearson_dev_ci95'][1]:.4f}]",
+          flush=True)
+    print(f"  pearson_dev_pooled {g['pearson_dev_pooled']:.4f}", flush=True)
+    print(f"  top50_dev          {g['top50_dev']}", flush=True)
+    print(f"  scored {report['n_scored_conditions']}/{report['n_test_conditions']} "
+          f"conditions | mask fraction {report['intersected_mask_fraction']:.3f}",
+          flush=True)
+    print("\nCompare against the VCPE head's pearson_dev from the SAME "
+          "--split_by / --seed / --n_hvg, and read the fairness notes before "
+          "quoting either number.", flush=True)
+
+    if args.out_json:
+        write_json(args.out_json, report, args=args)
+        print(f"wrote {args.out_json}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
