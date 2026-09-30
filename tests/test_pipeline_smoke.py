@@ -122,6 +122,9 @@ def test_baselines_are_reported_beside_the_model(trained):
     for name in ("zero", "train_mean", "knn_esm2", "ridge_esm2"):
         assert name in log, f"baseline {name} missing from the report"
     final = json.loads((out / "final_report.json").read_text())
+    # neighbor_prior is absent without a STRING table on purpose: with no graph it
+    # is identical to train_mean, and a duplicate row reads like a second,
+    # independent control agreeing with the first.
     assert set(final["baselines"]) == {"zero", "train_mean", "knn_esm2", "ridge_esm2"}
     for m in final["baselines"].values():
         assert np.isfinite(m["pearson_dev"])

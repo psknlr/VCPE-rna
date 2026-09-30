@@ -37,6 +37,13 @@ knn_esm2
     learned head does not beat it, the head is an expensive nearest-neighbour
     lookup.
 
+neighbor_prior
+    The train mean plus ONE parameter for "this gene is a STRING partner of the
+    perturbed gene". It exists so that a gain from the model's `is_neighbor`
+    channel can be attributed: that channel is information the ESM2 controls
+    cannot express, so without a graph-aware control a gain from extra input
+    would look like a gain from architecture.
+
 ridge_esm2
     Closed-form multivariate ridge from the target gene's ESM2 embedding to the
     residual profile. A linear map over the same inputs; the standard "is a
@@ -139,11 +146,62 @@ def baseline_ridge_esm2(dev_tr, esm_tr, esm_te, mask_tr=None, alpha=1.0,
     return (pred + y_mu).astype(np.float32)
 
 
+def baseline_neighbor_prior(dev_tr, esm_tr, esm_te, mask_tr=None,
+                            is_nb_tr=None, is_nb_te=None):
+    """Graph-only control: the train mean, plus one parameter for "is a STRING partner".
+
+    This exists to keep a fairness question answerable. The `is_neighbor` channel
+    gives the head a biological prior -- knocking a gene down should perturb its
+    interaction partners -- that `ridge_esm2` and `knn_esm2` structurally cannot
+    express, because they see only the target's ESM2 vector. A head that gains
+    from that channel has therefore been given more information, and attributing
+    the gain to its architecture instead would be the same mistake this
+    repository's errata are about.
+
+    So this predicts the weakest thing that still uses the graph:
+
+        dev_hat[i, h] = mu[h] + beta * is_neighbor[i, h]
+
+    `mu` is the per-gene masked training mean -- i.e. exactly `train_mean` -- and
+    `beta` is a single scalar fitted on training items only: how much more a gene
+    deviates when it is a partner of the perturbed gene than when it is not. The
+    gap between this and `train_mean` is what the graph buys on its own; the gap
+    between the head and this is what the head's use of the graph buys beyond a
+    one-parameter rule.
+
+    With no graph supplied it degrades to `train_mean`, which is the honest
+    fallback rather than an error: the caller may simply not have a table.
+    """
+    dev = np.asarray(dev_tr, dtype=np.float64)
+    m = (np.ones_like(dev, dtype=bool) if mask_tr is None
+         else np.asarray(mask_tr, dtype=bool))
+    denom = m.sum(axis=0)
+    mu = np.where(denom > 0, (dev * m).sum(axis=0) / np.maximum(denom, 1), 0.0)
+
+    n_te = np.asarray(esm_te).shape[0]
+    if is_nb_tr is None or is_nb_te is None:
+        return np.tile(mu.astype(np.float32), (n_te, 1))
+
+    nb_tr = np.asarray(is_nb_tr, dtype=bool)
+    resid = dev - mu[None, :]
+    # beta: mean residual on partner positions minus on non-partner positions,
+    # both masked. Fitted on TRAINING items only.
+    on, off = m & nb_tr, m & ~nb_tr
+    n_on, n_off = on.sum(), off.sum()
+    if n_on == 0 or n_off == 0:
+        beta = 0.0
+    else:
+        beta = float((resid * on).sum() / n_on - (resid * off).sum() / n_off)
+    pred = mu[None, :] + beta * np.asarray(is_nb_te, dtype=np.float64)
+    return pred.astype(np.float32)
+
+
 REGISTRY = {
     "zero": baseline_zero,
     "train_mean": baseline_train_mean,
     "knn_esm2": baseline_knn_esm2,
     "ridge_esm2": baseline_ridge_esm2,
+    "neighbor_prior": baseline_neighbor_prior,
 }
 
 
@@ -159,6 +217,9 @@ def run_all(dev_tr, esm_tr, esm_te, mask_tr=None, which=None, **kw):
         elif n == "ridge_esm2":
             out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr,
                         alpha=kw.get("ridge_alpha", 1.0))
+        elif n == "neighbor_prior":
+            out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr,
+                        is_nb_tr=kw.get("is_nb_tr"), is_nb_te=kw.get("is_nb_te"))
         else:
             out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr)
     return out

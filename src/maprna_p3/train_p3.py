@@ -602,9 +602,41 @@ def main():
     # Without these there is no evidence that the learned head does more than
     # retrieval over the frozen ESM2 embeddings it is conditioned on.
     esm_np = model.esm_table.detach().cpu().numpy()
+    # The graph-only control needs the same is_neighbor indicator the model sees,
+    # otherwise a gain from the model's network channel has nothing to be measured
+    # against and would look like an architectural win rather than extra input.
+    is_nb_tr = is_nb_te = None
+    if getattr(model, "neighbor_table", None) is not None:
+        with torch.no_grad():
+            # indicator_features returns (is_nb, is_tgt) -- neighbour FIRST.
+            # Indexing [1] here would hand the control the TARGET indicator and
+            # silently measure the wrong thing, so the order is asserted below.
+            is_nb_tr, is_tgt_tr = model.indicator_features(
+                torch.as_tensor(data["rows_tr"], dtype=torch.long))
+            is_nb_te, _ = model.indicator_features(
+                torch.as_tensor(data["rows_te"], dtype=torch.long))
+            is_nb_tr = is_nb_tr.cpu().numpy()
+            is_nb_te = is_nb_te.cpu().numpy()
+            # is_tgt marks the perturbed gene itself, so it can fire at most once
+            # per row; is_nb is a neighbourhood and generally fires more. If this
+            # trips, the tuple order flipped.
+            assert is_tgt_tr.cpu().numpy().sum(axis=1).max() <= 1, \
+                "indicator_features order looks flipped: the second element is " \
+                "firing on many genes per item, which is is_nb, not is_tgt"
+        print(f"[baselines] graph-only control enabled: is_neighbor covers "
+              f"{is_nb_te.mean() * 100:.2f}% of held-out (item, gene) cells",
+              flush=True)
+    # Without a graph, neighbor_prior is *identical* to train_mean by construction.
+    # Reporting both would put a duplicate row in the table that reads like an
+    # independent control corroborating the first, so it is requested only when a
+    # graph is actually present.
+    which = ["zero", "train_mean", "knn_esm2", "ridge_esm2"]
+    if is_nb_te is not None:
+        which.append("neighbor_prior")
     base_preds = run_all(
         data["dev_tr"], esm_np[data["rows_tr"]], esm_np[data["rows_te"]],
-        mask_tr=(data["mask_tr"] if args.use_mask else None), knn_k=args.knn_k)
+        mask_tr=(data["mask_tr"] if args.use_mask else None), knn_k=args.knn_k,
+        which=which, is_nb_tr=is_nb_tr, is_nb_te=is_nb_te)
     mask_te = data["mask_te"] if args.use_mask else np.ones_like(data["mask_te"])
     dev_te = data["dev_te"]
     final["baselines"] = {}

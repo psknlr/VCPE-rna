@@ -13,7 +13,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "maprna_p3"))
 
 from baselines import (  # noqa: E402
-    baseline_knn_esm2, baseline_ridge_esm2, baseline_train_mean, baseline_zero, run_all)
+    REGISTRY, baseline_knn_esm2, baseline_neighbor_prior, baseline_ridge_esm2,
+    baseline_train_mean, baseline_zero, run_all)
 
 
 def _synthetic(n_tr=120, n_te=30, d=64, n_gene=50, seed=0):
@@ -110,3 +111,76 @@ def test_ridge_handles_more_features_than_samples():
     p = baseline_ridge_esm2(dev_tr, e_tr, e_te, alpha=1.0)
     assert p.shape == (len(e_te), 10)
     assert np.isfinite(p).all()
+
+
+# --------------------------------------------------------------------------
+# neighbor_prior -- the fairness control for the model's network channel
+# --------------------------------------------------------------------------
+
+def test_neighbor_prior_degrades_to_train_mean_without_a_graph():
+    """No graph supplied is a missing table, not an error."""
+    rng = np.random.default_rng(0)
+    dev_tr = rng.normal(size=(20, 30))
+    esm_tr, esm_te = rng.normal(size=(20, 8)), rng.normal(size=(5, 8))
+    got = baseline_neighbor_prior(dev_tr, esm_tr, esm_te)
+    exp = baseline_train_mean(dev_tr, esm_tr, esm_te)
+    assert np.allclose(got, exp, atol=1e-6)
+    assert got.shape == (5, 30)
+
+
+def test_neighbor_prior_recovers_a_planted_neighbour_effect():
+    """If partners really deviate more, the one fitted parameter must find it."""
+    rng = np.random.default_rng(1)
+    n_tr, n_te, n_g = 60, 10, 40
+    nb_tr = rng.random((n_tr, n_g)) < 0.2
+    nb_te = rng.random((n_te, n_g)) < 0.2
+    dev_tr = rng.normal(scale=0.05, size=(n_tr, n_g)) + 0.8 * nb_tr
+    esm_tr, esm_te = rng.normal(size=(n_tr, 8)), rng.normal(size=(n_te, 8))
+    pred = baseline_neighbor_prior(dev_tr, esm_tr, esm_te,
+                                   is_nb_tr=nb_tr, is_nb_te=nb_te)
+    # partner cells must be predicted clearly above non-partner cells
+    assert pred[nb_te].mean() - pred[~nb_te].mean() > 0.5
+    # and it must beat train_mean on a held-out set built the same way
+    dev_te = rng.normal(scale=0.05, size=(n_te, n_g)) + 0.8 * nb_te
+    tm = baseline_train_mean(dev_tr, esm_tr, esm_te)
+    err_nb = float(np.mean((pred - dev_te) ** 2))
+    err_tm = float(np.mean((tm - dev_te) ** 2))
+    assert err_nb < err_tm, "the graph parameter did not help where it should"
+
+
+def test_neighbor_prior_finds_nothing_when_the_graph_is_uninformative():
+    """A control that 'helps' on a random graph would be leaking, not using it."""
+    rng = np.random.default_rng(2)
+    n_tr, n_te, n_g = 60, 10, 40
+    dev_tr = rng.normal(size=(n_tr, n_g))
+    nb_tr = rng.random((n_tr, n_g)) < 0.2          # unrelated to dev_tr
+    nb_te = rng.random((n_te, n_g)) < 0.2
+    esm_tr, esm_te = rng.normal(size=(n_tr, 8)), rng.normal(size=(n_te, 8))
+    pred = baseline_neighbor_prior(dev_tr, esm_tr, esm_te,
+                                   is_nb_tr=nb_tr, is_nb_te=nb_te)
+    tm = baseline_train_mean(dev_tr, esm_tr, esm_te)
+    # beta should be near zero, so the prediction stays close to train_mean
+    assert np.abs(pred - tm).max() < 0.15
+
+
+def test_neighbor_prior_respects_the_mask_when_fitting_beta():
+    """Unmeasured cells must not contribute to the fitted graph parameter."""
+    rng = np.random.default_rng(3)
+    n_tr, n_g = 40, 20
+    nb_tr = np.zeros((n_tr, n_g), bool); nb_tr[:, :5] = True
+    dev_tr = rng.normal(scale=0.01, size=(n_tr, n_g))
+    dev_tr[:, :5] += 5.0                            # huge effect, but masked out
+    mask = np.ones((n_tr, n_g), bool); mask[:, :5] = False
+    esm_tr, esm_te = rng.normal(size=(n_tr, 6)), rng.normal(size=(3, 6))
+    pred = baseline_neighbor_prior(dev_tr, esm_tr, esm_te, mask_tr=mask,
+                                   is_nb_tr=nb_tr, is_nb_te=np.ones((3, n_g), bool))
+    assert np.isfinite(pred).all()
+    # with every partner cell masked away, beta has no evidence and must stay ~0
+    assert np.abs(pred).max() < 1.0, "masked cells leaked into the graph parameter"
+
+
+def test_registry_exposes_the_graph_control():
+    assert "neighbor_prior" in REGISTRY
+    out = run_all(np.zeros((6, 10)), np.zeros((6, 4)), np.zeros((2, 4)),
+                  which=["neighbor_prior"])
+    assert out["neighbor_prior"].shape == (2, 10)
