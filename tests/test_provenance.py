@@ -100,3 +100,16 @@ def test_clean_tree_is_not_flagged(monkeypatch):
                         lambda: {"revision": "a" * 40, "branch": "b",
                                  "dirty": False, "n_modified_files": 0})
     assert "warning" not in provenance.stamp()
+
+
+def test_stamp_accepts_a_mapping_as_well_as_a_namespace():
+    """stamp() is the last call in runs that take hours.
+
+    Passing an already-extracted dict is the natural mistake, and raising on it
+    discards the record of work that has already completed -- which is how the
+    first full ESM2 table build ended.
+    """
+    from argparse import Namespace
+    a = stamp(args=Namespace(model="esm2", threads=4))
+    b = stamp(args={"model": "esm2", "threads": 4})
+    assert a["args"] == b["args"] == {"model": "esm2", "threads": 4}

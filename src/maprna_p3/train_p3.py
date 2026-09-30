@@ -97,10 +97,9 @@ def build_dev_data(args):
     for di, (Xc, rows) in enumerate(zip(kd["X_ctrl"], kd["row_of_gene"])):
         cm = Xc.mean(axis=0)
         row2col = {int(r): c for c, r in enumerate(rows)}
-        for hi, hr in enumerate(hvg_rows):
-            c = row2col.get(int(hr))
-            if c is not None:
-                ctrl_mean[di, hi] = cm[c]
+        cols = np.array([row2col.get(int(hr), -1) for hr in hvg_rows], dtype=np.int64)
+        ok = cols >= 0
+        ctrl_mean[di, ok] = cm[cols[ok]]
     # z-score across genes within each dataset (feature scale for the MLP)
     mu, sd = ctrl_mean.mean(axis=1, keepdims=True), ctrl_mean.std(axis=1, keepdims=True) + 1e-6
     ctrl_feat_all = (ctrl_mean - mu) / sd
@@ -158,6 +157,17 @@ def build_dev_data(args):
               f"appear in BOTH splits -- results are not an unseen-gene estimate; "
               f"use --split_by target_gene for that.", flush=True)
 
+    # Per-dataset lookups, built once. Both of these used to be rebuilt inside the
+    # per-item loops below, which is quadratic in a way that only shows up on a real
+    # dataset: 2204 perturbations x an 8749-entry dict, and 2204 recomputations of a
+    # 3000 x 8749 control mean. On Replogle RPE1 that is tens of billions of
+    # redundant float operations before a single training step.
+    row2col_ds = [{int(r): c for c, r in enumerate(rows)}
+                  for rows in kd["row_of_gene"]]
+    ctrl_mean_full = [Xc.mean(axis=0) for Xc in kd["X_ctrl"]]
+    hvg_col_ds = [np.array([r2c.get(int(hr), -1) for hr in hvg_rows], dtype=np.int64)
+                  for r2c in row2col_ds]
+
     # targets: deterministic pert-mean over HVG.
     # `measured` marks HVG columns actually present in that item's dataset panel.
     # Unmeasured columns stay 0, which makes fc == 0 and dev == -common_fc,
@@ -174,12 +184,10 @@ def build_dev_data(args):
             cp = kd["pert_labels"][di]
             idx = np.where(cp == cond)[0]
             mean = kd["X_pert"][di][idx].mean(axis=0)
-            row2col = {int(r): c for c, r in enumerate(kd["row_of_gene"][di])}
-            for hi, hr in enumerate(hvg_rows):
-                c = row2col.get(int(hr))
-                if c is not None:
-                    T[k, hi] = mean[c]
-                    M[k, hi] = True
+            cols = hvg_col_ds[di]                      # [n_hvg], -1 where unmeasured
+            ok = cols >= 0
+            T[k, ok] = mean[cols[ok]]
+            M[k] = ok
             rows_p[k] = resolve_pert_row(sym2row, cond)
         return T, rows_p, M
 
@@ -201,10 +209,9 @@ def build_dev_data(args):
             r = resolve_pert_row(sym2row, cond)
             if r < 0:
                 continue
-            row2col = {int(rr): c for c, rr in enumerate(kd["row_of_gene"][di])}
-            c = row2col.get(int(r))
+            c = row2col_ds[di].get(int(r))
             if c is not None:
-                E[k] = float(kd["X_ctrl"][di].mean(axis=0)[c])
+                E[k] = float(ctrl_mean_full[di][c])
         return E
 
     pert_expr_tr = pert_expr_of(train_items)

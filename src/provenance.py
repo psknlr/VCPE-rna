@@ -102,7 +102,11 @@ def stamp(args=None, extra=None):
         packages=package_versions(),
     )
     if args is not None:
-        prov["args"] = {k: _jsonable(v) for k, v in vars(args).items()}
+        # argparse.Namespace or an already-extracted mapping. Accepting both is
+        # deliberate: this is the last call in a long run, and raising here would
+        # throw away the record of work that has already been done.
+        items = args.items() if hasattr(args, "items") else vars(args).items()
+        prov["args"] = {str(k): _jsonable(v) for k, v in items}
     if extra:
         prov.update(extra)
     if g.get("dirty"):
