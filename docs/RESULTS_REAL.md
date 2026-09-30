@@ -406,6 +406,52 @@ closed-form solve with no budget at all, so every epoch given to the head widens
 an asymmetry already recorded in the fairness block. A head that needs 5x the
 compute to match a linear solve has not made an efficiency case either.
 
+## Was the graph design lucky? A sweep that found no improvement
+
+The `[own || mean(partners)]` design was a first guess. Eight variants were ranked
+on **inner validation only** (`tools/sweep_graph_features.py`), using ridge as the
+readout because it is closed-form and currently tied with the head on these
+features. No held-out number was computed: the script never reads `dev_te`, since
+ranking designs by the slice they are then reported on is ERRATA E3 with a
+different knob.
+
+| variant | inner-val ridge | vs plain |
+|---|---|---|
+| **concat k=32, norm-matched** (the design already in use) | **+0.3693** | +0.0940 |
+| concat k=32, not norm-matched | +0.3685 | +0.0932 |
+| concat k=16, norm-matched | +0.3676 | +0.0923 |
+| concat k=8, norm-matched | +0.3636 | +0.0883 |
+| blend alpha=0.4, k=32 | +0.3481 | +0.0728 |
+| concat k=4, norm-matched | +0.3449 | +0.0696 |
+| blend alpha=0.2, k=32 | +0.3096 | +0.0343 |
+| plain, no graph | +0.2753 | — |
+
+**The variant already in use came first, so the sweep yields no new performance
+claim.** That is the honest headline, and it is worth more than a marginal win
+would have been: three things that were guesses are now measured.
+
+1. **Concatenation beats blending, decisively** (+0.369 vs +0.348 at the better
+   alpha, +0.310 at the worse). Keeping the original vector intact matters;
+   blending mixes the self signal away, which is why the tool warns that a loss
+   under `blend` is ambiguous between "the network is unhelpful" and "the self
+   vector was damaged".
+2. **The gain is monotone in neighbourhood size and saturating**: k=4 +0.345,
+   k=8 +0.364, k=16 +0.368, k=32 +0.369. Going 16 -> 32 bought +0.0017, so k=64
+   would be expected to buy under +0.001. It was **not** run: chasing a third
+   decimal across a rebuild is how a sweep turns into noise-mining, and the
+   trend already answers the question.
+3. **Norm-matching the neighbourhood block is almost irrelevant** (+0.3693 vs
+   +0.3685). It was included on the reasoning that averaging shrinks a vector's
+   norm and the two halves should enter at the same scale. That reasoning was
+   sound and the effect is negligible, which is worth recording so the next
+   person does not treat the flag as important.
+
+**These are inner-validation numbers and must not be quoted as performance.** They
+are systematically higher than the held-out ones (+0.369 here against ridge's
++0.337 on held-out) because inner validation is the slice the panel and the split
+were derived around. The held-out figures remain ridge **+0.3370** and head
+**+0.3346**.
+
 ## A scale check that matters for how Table A is read
 
 Table A trains on both screens together. Table D repeats the head on the **Tian
