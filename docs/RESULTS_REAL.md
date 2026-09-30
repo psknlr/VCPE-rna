@@ -353,9 +353,22 @@ establish that the head cannot beat ridge; it establishes that it has not yet,
 within a budget it is still exhausting.
 
 That invites an obvious abuse: extend the budget until the favoured model wins,
-then stop. To avoid it, the follow-up budget was **declared before running and run
-once** -- 150 epochs, 3 seeds -- and whatever it produced is reported below
-without a further extension. Note also what "more epochs" means here: ridge is a
+then stop. To avoid it, the follow-up budget was **declared before running** --
+150 epochs, 3 seeds, reported as-is with no further extension.
+
+**That declared run could not be completed, and its non-completion is part of the
+record rather than a reason to quietly substitute something smaller.** It needs
+about 3.3 hours and the container hosting this session restarted twice mid-run; no
+seed finished. Resuming after an infrastructure failure is not a budget change, so
+it was restarted unchanged, and it died again.
+
+What is reported instead is a **single-seed convergence probe** at 150 epochs,
+labelled as such. It answers the one question left open -- whether
+inner-validation selection picks an epoch well before the budget ends, i.e.
+whether the head converges at all -- and it is explicitly **not** the declared
+three-seed paired comparison. The paired head-vs-ridge verdict therefore stands
+where it was measured at 80 epochs: **a tie**, -0.0024, CI [-0.0308, +0.0260]. No
+claim here rests on the probe. Note also what "more epochs" means here: ridge is a
 closed-form solve with no budget at all, so every epoch given to the head widens
 an asymmetry already recorded in the fairness block. A head that needs 5x the
 compute to match a linear solve has not made an efficiency case either.
