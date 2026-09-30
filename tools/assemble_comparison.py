@@ -29,8 +29,19 @@ from provenance import write_json  # noqa: E402
 
 # Fields that decide WHAT is being measured. Two rows that differ on any of these
 # are not comparable, whatever their numbers look like.
+#
+# esm_table is one of them, and for a reason worth stating: the head, the k-NN
+# retrieval control and the ridge control all read the same table, so the table
+# does not bias the comparison BETWEEN them -- but it does move all three, and it
+# does not move them equally. The controls are pure functions of the embedding,
+# while the head also sees the control profile and the dataset embedding, so a
+# weaker table handicaps the controls more than the head. Putting a row from one
+# table beside a row from another would therefore flatter the head, in a way no
+# amount of care in reading the numbers would reveal. It is compared by path,
+# which is a proxy: two tables built from different ESM2 variants to the same path
+# would slip through, so the variant is recorded in each table's sidecar.
 REQUIRED_SAME = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
-                 "min_cells", "seed", "use_mask")
+                 "min_cells", "seed", "use_mask", "esm_table")
 
 # Fields worth showing but which legitimately differ between models.
 INFORMATIVE = ("epochs", "train_h5ad", "train_h5ad_is_cell_level", "device")

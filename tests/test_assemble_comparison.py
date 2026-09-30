@@ -23,7 +23,7 @@ def prov(**args):
 def seeds_report(path, value, seeds=(0, 1, 2), **over):
     a = dict(data_dirs=["/d/a.h5ad"], n_hvg=2000, hvg_from="train",
              split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
-             seeds=list(seeds))
+             esm_table="/t/esm.pt", seeds=list(seeds))
     a.update(over)
     rep = dict(model=dict(mean=value, n=len(seeds), sd=0.01, min=value - .01,
                          max=value + .01),
@@ -40,7 +40,7 @@ def seeds_report(path, value, seeds=(0, 1, 2), **over):
 def gears_report(path, value, **over):
     a = dict(data_dirs=["/d/a.h5ad"], n_hvg=2000, hvg_from="train",
              split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
-             seed=0)
+             esm_table="/t/esm.pt", seed=0)
     a.update(over)
     rep = dict(gears=dict(pearson_dev=value), gears_across_runs=dict(n_runs=5, sd=.03,
                                                                     min=.01, max=.12),
@@ -87,7 +87,7 @@ def test_it_refuses_two_different_estimators_in_one_table(tmp_path):
     """E4, machine-checked."""
     a = dict(data_dirs=["/d/a.h5ad"], n_hvg=2000, hvg_from="train",
              split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
-             seed=0)
+             esm_table="/t/esm.pt", seed=0)
     (tmp_path / "a.json").write_text(json.dumps(dict(
         gears=dict(pearson_dev=0.1, pearson_dev_estimator="pooled"), **prov(**a))))
     (tmp_path / "b.json").write_text(json.dumps(dict(
@@ -190,3 +190,16 @@ def test_it_refuses_to_put_a_masked_and_an_unmasked_row_in_one_table(tmp_path):
     p = run("--reports", str(tmp_path / "s.json"), str(tmp_path / "g.json"),
             "--out_json", str(tmp_path / "o.json"))
     assert p.returncode == 2 and "use_mask" in p.stderr
+
+
+def test_it_refuses_rows_built_from_different_embedding_tables(tmp_path):
+    """The head and both ESM2 controls read the same table, so the table does not
+    bias the comparison between them -- but it moves all three unequally. The
+    controls are pure functions of the embedding while the head also sees the
+    control profile, so a weaker table handicaps the controls more. Mixing tables
+    would flatter the head invisibly."""
+    seeds_report(tmp_path / "s.json", 0.05, seeds=(0,))
+    gears_report(tmp_path / "g.json", 0.15, esm_table="/t/esm_150M.pt")
+    p = run("--reports", str(tmp_path / "s.json"), str(tmp_path / "g.json"),
+            "--out_json", str(tmp_path / "o.json"))
+    assert p.returncode == 2 and "esm_table" in p.stderr
