@@ -26,7 +26,12 @@ PROTOCOL_FLAGS = {"--n_hvg", "--split_by", "--hvg_from", "--test_frac", "--seed"
 
 CALLERS = ["src/maprna_p3/train_p3.py", "src/maprna_p3/ablate_axes.py",
            "src/maprna_p3/eval_fair.py", "src/maprna_p3/baseline_gears.py",
-           "src/maprna_p3/baseline_cpa.py"]
+           "src/maprna_p3/baseline_cpa.py", "tools/sweep_graph_features.py"]
+
+# A caller may express the split seed singly (--seed) or plurally (--seeds, when it
+# deliberately ranks over several splits). Either states which splits produced the
+# number, which is what the requirement is for.
+SEED_EQUIVALENTS = {"--seed", "--seeds"}
 
 
 def declared_flags(path):
@@ -49,7 +54,11 @@ def calls_build_dev_data(path):
 @pytest.mark.parametrize("path", CALLERS)
 def test_every_build_dev_data_caller_exposes_the_protocol_flags(path):
     assert calls_build_dev_data(path), f"{path} no longer calls build_dev_data"
-    missing = sorted(PROTOCOL_FLAGS - declared_flags(path))
+    have = declared_flags(path)
+    need = set(PROTOCOL_FLAGS)
+    if have & SEED_EQUIVALENTS:
+        need.discard("--seed")
+    missing = sorted(need - have)
     assert not missing, (
         f"{path} calls build_dev_data but cannot be told {missing}. An external "
         "baseline that cannot be told the panel and split cannot be claimed to "
