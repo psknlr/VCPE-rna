@@ -33,11 +33,14 @@ response direction and magnitude — a commercially usable replacement for Non-C
 >
 > **The first corrected measurement on real data is now in
 > [docs/RESULTS_REAL.md](docs/RESULTS_REAL.md).** On two real CRISPRi screens,
-> under a held-out-gene split, the model clears the trivial baselines but does
-> **not** convincingly beat a ridge regression over the same ESM2 embeddings
-> (paired CI [-0.016, +0.026]). This is a fresh measurement on reachable
-> datasets, not a regeneration of the withdrawn figures. Please do not cite
-> figures from earlier tags.
+> under a held-out-gene split, the model clears the trivial baselines
+> decisively, and its edge over a ridge regression on the *same* ESM2 embeddings
+> is **embedding-dependent**: a tie on ESM2-35M (paired CI [-0.016, +0.026]), a
+> small but consistent win on ESM2-150M (+0.027, paired CI [+0.010, +0.045],
+> every seed). It is a modest advantage over a linear baseline, not the large
+> margin earlier tags claimed, and a fresh measurement on reachable datasets --
+> not a regeneration of the withdrawn figures. Please do not cite figures from
+> earlier tags.
 >
 > What survives unchanged: the P2 shared-response finding (strengthened — the
 > same failure mode recurred twice more in our own pipeline), and the three

@@ -1,0 +1,263 @@
+{
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "n_seeds": 3,
+  "variation": "seed varies both initialisation AND the grouped split, so these intervals answer 'does this survive a different choice of held-out genes', not merely a different initialisation",
+  "model": {
+    "label": "model",
+    "n": 3,
+    "mean": 0.29273412598717213,
+    "sd": 0.005484826179320669,
+    "min": 0.2878284458300166,
+    "max": 0.2986559781533808,
+    "ci95_mean": [
+      0.2865274608798375,
+      0.2989407910945068
+    ],
+    "per_seed": [
+      0.2878284458300166,
+      0.29171795397811906,
+      0.2986559781533808
+    ]
+  },
+  "baselines": {
+    "knn_esm2": {
+      "label": "knn_esm2",
+      "n": 3,
+      "mean": 0.2114869493895898,
+      "sd": 0.02105611748713303,
+      "min": 0.18774057590794666,
+      "max": 0.2278814626486675,
+      "ci95_mean": [
+        0.1876597093949919,
+        0.23531418938418772
+      ],
+      "per_seed": [
+        0.18774057590794666,
+        0.2278814626486675,
+        0.21883880961215524
+      ]
+    },
+    "ridge_esm2": {
+      "label": "ridge_esm2",
+      "n": 3,
+      "mean": 0.2653304194384247,
+      "sd": 0.020271033899664562,
+      "min": 0.2427994714626939,
+      "max": 0.28208971749041284,
+      "ci95_mean": [
+        0.24239158515612694,
+        0.28826925372072254
+      ],
+      "per_seed": [
+        0.2427994714626939,
+        0.27110206936216735,
+        0.28208971749041284
+      ]
+    },
+    "train_mean": {
+      "label": "train_mean",
+      "n": 3,
+      "mean": 0.012149685393523233,
+      "sd": 0.0023533841426733922,
+      "min": 0.009902433149077775,
+      "max": 0.014596493262658576,
+      "ci95_mean": [
+        0.009486580535696237,
+        0.01481279025135023
+      ],
+      "per_seed": [
+        0.011950129768833351,
+        0.014596493262658576,
+        0.009902433149077775
+      ]
+    },
+    "zero": {
+      "label": "zero",
+      "n": 3,
+      "mean": 0.0,
+      "sd": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "ci95_mean": [
+        0.0,
+        0.0
+      ],
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "selected_epochs": [
+    30,
+    26,
+    28
+  ],
+  "split_by": [
+    "target_gene"
+  ],
+  "protocol": {
+    "data_dirs": [
+      "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+    ],
+    "n_hvg": 500,
+    "hvg_from": "train",
+    "split_by": "target_gene",
+    "test_frac": 0.15,
+    "min_cells": 1,
+    "epochs": 30,
+    "inner_val_frac": 0.15,
+    "esm_table": "/home/user/data_real/esm2_150M_human.pt",
+    "use_mask": true,
+    "knn_k": 10,
+    "d_model": 256
+  },
+  "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r",
+  "paired_vs_baselines": {
+    "knn_esm2": {
+      "n": 3,
+      "mean_difference": 0.08124717659758236,
+      "sd": 0.018167947180330293,
+      "ci95_mean_difference": [
+        0.06068820897501663,
+        0.1018061442201481
+      ],
+      "seeds_where_model_wins": 3,
+      "verdict": "model beats this baseline on every seed",
+      "per_seed": [
+        0.10008786992206994,
+        0.06383649132945157,
+        0.07981716854122556
+      ]
+    },
+    "ridge_esm2": {
+      "n": 3,
+      "mean_difference": 0.027403706548747454,
+      "sd": 0.015397643092289257,
+      "ci95_mean_difference": [
+        0.009979633115678243,
+        0.04482777998181667
+      ],
+      "seeds_where_model_wins": 3,
+      "verdict": "model beats this baseline on every seed",
+      "per_seed": [
+        0.0450289743673227,
+        0.020615884615951707,
+        0.016566260662967958
+      ]
+    },
+    "train_mean": {
+      "n": 3,
+      "mean_difference": 0.2805844405936489,
+      "sd": 0.007101904836872328,
+      "ci95_mean_difference": [
+        0.2725478787217673,
+        0.2886210024655305
+      ],
+      "seeds_where_model_wins": 3,
+      "verdict": "model beats this baseline on every seed",
+      "per_seed": [
+        0.27587831606118324,
+        0.2771214607154605,
+        0.288753545004303
+      ]
+    },
+    "zero": {
+      "n": 3,
+      "mean_difference": 0.29273412598717213,
+      "sd": 0.005484826179320669,
+      "ci95_mean_difference": [
+        0.2865274608798375,
+        0.2989407910945068
+      ],
+      "seeds_where_model_wins": 3,
+      "verdict": "model beats this baseline on every seed",
+      "per_seed": [
+        0.2878284458300166,
+        0.29171795397811906,
+        0.2986559781533808
+      ]
+    }
+  },
+  "provenance": {
+    "recorded_at": "2026-09-30T13:20:12+0000",
+    "git": {
+      "revision": "a2618fda654df3f8173f83f7a6565c46e6ff2c8d",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": false,
+      "n_modified_files": 0
+    },
+    "command": "run_seeds.py --out_dir /home/user/VCPE-rna/results/real_150M/A_seeds --seeds 0 1 2 --skip_existing --data_dirs /home/user/data_real/gears_fmt/replogle_rpe1.h5ad /home/user/data_real/gears_fmt/tian2021_crispri.h5ad --esm_table /home/user/data_real/esm2_150M_human.pt --n_hvg 500 --min_cells 1 --split_by target_gene --hvg_from train --epochs 30",
+    "argv": [
+      "src/maprna_p3/run_seeds.py",
+      "--out_dir",
+      "/home/user/VCPE-rna/results/real_150M/A_seeds",
+      "--seeds",
+      "0",
+      "1",
+      "2",
+      "--skip_existing",
+      "--data_dirs",
+      "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad",
+      "--esm_table",
+      "/home/user/data_real/esm2_150M_human.pt",
+      "--n_hvg",
+      "500",
+      "--min_cells",
+      "1",
+      "--split_by",
+      "target_gene",
+      "--hvg_from",
+      "train",
+      "--epochs",
+      "30"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "out_dir": "/home/user/VCPE-rna/results/real_150M/A_seeds",
+      "train_script": "/home/user/VCPE-rna/src/maprna_p3/train_p3.py",
+      "skip_existing": true,
+      "summary_json": "",
+      "forward": [
+        "--data_dirs",
+        "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+        "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad",
+        "--esm_table",
+        "/home/user/data_real/esm2_150M_human.pt",
+        "--n_hvg",
+        "500",
+        "--min_cells",
+        "1",
+        "--split_by",
+        "target_gene",
+        "--hvg_from",
+        "train",
+        "--epochs",
+        "30"
+      ]
+    }
+  }
+}

@@ -29,8 +29,11 @@ Two real CRISPRi screens, the kind of knockdown this model claims to predict:
   (never the pooled one; ERRATA E4).
 - **Selection:** epoch chosen on an inner validation split; the held-out set is
   scored once (ERRATA E3).
-- **Embedding table:** ESM2-35M, built by `tools/build_esm2_gene_table.py`. See
-  the caveat at the end -- this choice is not neutral, and it flatters the model.
+- **Embedding table:** the run is reported under both ESM2-35M and ESM2-150M
+  (built by `tools/build_esm2_gene_table.py`). The choice is not neutral and the
+  result depends on it -- see the two Table A sections and the correction near the
+  end, where the direction of that dependence turned out opposite to my
+  prediction.
 - **Seeds:** 3, each varying both initialisation and the split, so the intervals
   answer "does this survive a different choice of held-out genes".
 
@@ -59,10 +62,33 @@ variance, which is larger than the differences being compared:
 | train_mean | +0.2225 | [+0.207, +0.238] | beats, every seed |
 | zero | +0.2347 | [+0.218, +0.251] | beats, every seed |
 
+## Table A under the stronger 150M embedding
+
+The same run under ESM2-150M (640-dim, vs 35M's 480-dim), which is closer to the
+650M table the withdrawn work used:
+
+| model | pearson_dev | sd | 35M value |
+|---|---|---|---|
+| **P3 head** | **+0.293** | 0.006 | +0.235 |
+| ridge_esm2 | +0.265 | — | +0.230 |
+| knn_esm2 | +0.212 | — | +0.208 |
+| train_mean | +0.012 | — | +0.012 |
+| zero | +0.000 | — | +0.000 |
+
+| vs baseline | paired diff | CI95 | verdict |
+|---|---|---|---|
+| ridge_esm2 | +0.0274 | **[+0.010, +0.045]** | beats, every seed |
+| knn_esm2 | +0.0812 | **[+0.061, +0.102]** | beats, every seed |
+| train_mean | +0.281 | [+0.273, +0.289] | beats, every seed |
+| zero | +0.293 | [+0.287, +0.299] | beats, every seed |
+
 ## What this says
 
-**The honest headline: the model clears the trivial floors decisively, and does
-not convincingly beat a linear map over the same embeddings.**
+**The honest headline is embedding-dependent, and it moved in the model's favour
+after I predicted it would not.** On the weaker 35M embedding the model ties the
+linear and retrieval baselines (paired CIs include zero). On the stronger 150M
+embedding it beats both on every seed, with paired CIs that exclude zero -- a
+real, if modest, advantage (+0.027 over ridge, +0.081 over k-NN).
 
 1. **It clears `zero` and `train_mean` on every seed, by a wide and
    split-stable margin.** This matters, and it is the thing the withdrawn P2
@@ -73,37 +99,52 @@ not convincingly beat a linear map over the same embeddings.**
    not inflated -- a baseline with no gene information scores as it should, which
    is the direct check that ERRATA E6's masking fix holds on real data.
 
-2. **Against the strong baselines it is a statistical tie.** The paired CI
-   against `ridge_esm2` is [-0.016, +0.026] -- centred almost exactly on zero --
-   and against `knn_esm2` it is [-0.009, +0.063]. The model wins 2 of 3 seeds
-   against each, which is what "no reliable difference" looks like, not what an
-   advantage looks like. A closed-form ridge regression over the same ESM2
-   vectors, which takes seconds to fit and has no perturbation-specific
-   architecture, matches the deep conditioned model on held-out genes.
+2. **Against the strong baselines the result depends on the embedding.** On 35M
+   it is a tie: paired CI against `ridge_esm2` is [-0.016, +0.026], centred on
+   zero, 2/3 seeds. On 150M the model beats `ridge_esm2` on every seed, paired CI
+   [+0.010, +0.045] excluding zero, and `knn_esm2` by more, [+0.061, +0.102]. So
+   the conditioning architecture does buy something over a linear map on the same
+   features -- but the margin is small (+0.027 pearson over a ridge fit that takes
+   seconds) and vanishes into noise on a weaker embedding. "Beats a ridge baseline
+   by ~0.03 on a good embedding, ties it on a poor one" is the honest claim; it is
+   not the large margin the withdrawn numbers asserted.
 
-This is not a failure of the model so much as a limit on what can currently be
-claimed for it. The value of the conditioning architecture over a linear map on
-the same features is **not established** on this data. That is a claim the
-withdrawn numbers made and this measurement does not support.
+The embedding matters more than I expected, and in the opposite direction (next
+section). The value of the architecture over a linear map is **modest and
+established only on the stronger embedding** -- a narrower claim than the
+withdrawn numbers made, but not the flat negative the 35M table alone suggested.
 
-## The caveat that decides how much weight this carries
+## A prediction I got wrong, recorded because getting it wrong is the point
 
-**The 35M embedding table biases the comparison toward the model.** The head, the
-ridge control and the k-NN control all read the same table, so it does not bias
-the comparison *between* them by construction -- but it does move them unequally.
-The controls are pure functions of the embedding; the head also sees the control
-profile and the dataset embedding. A weaker table therefore handicaps the
-controls more than the head. 35M is the weakest of the ESM2 variants that fit
-this host in reasonable time (650M -- what the withdrawn results used -- needs
-about a day on 4 CPUs).
+When only the 35M result existed, I argued in this file that the 35M table
+*flattered* the model: the controls are pure functions of the embedding while the
+head also sees the control profile, so -- I reasoned -- a weaker embedding should
+handicap the controls more than the head, and a stronger table "can only weaken
+the model's case." I stated the tie "at its most favourable" on that basis.
 
-So the near-tie above is, if anything, **generous to the model**: under a
-stronger table the ridge and k-NN controls would be expected to gain relative to
-the head, not lose. A re-run under ESM2-150M is the outstanding check
-(`docs/ERRATA.md` Outstanding, and the build is already staged). If the ordering
-holds there, the conclusion is robust; if ridge pulls ahead, the model's case is
-weaker still. The conclusion will not be strengthened by a larger table -- only
-possibly weakened -- so it is stated at its most favourable here.
+**The 150M re-run falsified this.** The stronger embedding helped the head *most*,
+not least:
+
+| going 35M -> 150M | gain in pearson_dev |
+|---|---|
+| P3 head | +0.058 |
+| ridge_esm2 | +0.035 |
+| knn_esm2 | +0.004 |
+
+The head, a non-linear model, exploits the richer embedding geometry that a linear
+ridge map and a nearest-neighbour lookup mostly cannot. My argument was plausible
+and wrong, and the failure mode is exactly the one this audit is about: a
+confident claim asserted from reasoning instead of measured. It is corrected here
+rather than quietly replaced.
+
+What this does **not** license is extrapolating the trend to the 650M table the
+withdrawn work used. The head's advantage grew from tie (35M) to +0.027 (150M),
+and it is tempting to say 650M would widen it further -- but that is precisely the
+unmeasured inference that got the original numbers withdrawn. 650M needs about a
+day on this 4-CPU host and has not been run. The claim stands where it was
+measured: at 150M, a small and consistent advantage over a linear baseline, on a
+mid-sized embedding, on two CRISPRi screens whose smaller member (Table D) is at
+the floor for every method.
 
 ## A scale check that matters for how Table A is read
 

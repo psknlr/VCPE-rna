@@ -631,10 +631,14 @@ constrained every claim -- "no number regenerated" and "no external model run"
 -- are addressed. Two real CRISPRi screens now go through the whole corrected
 pipeline, and the head, four controls, GEARS and CPA are all scored on one
 footing. The result is in [RESULTS_REAL.md](RESULTS_REAL.md), and the honest
-headline is that on real data the model clears the trivial floors but **does not
-convincingly beat a ridge regression over the same embeddings** (paired CI
-[-0.016, +0.026]). The remaining items below are now about strengthening and
-widening that measurement, not about whether one exists. They are ordered by
+headline is that on real data the model clears the trivial floors decisively and
+its edge over a ridge regression on the same embeddings is embedding-dependent:
+a tie on ESM2-35M (paired CI [-0.016, +0.026]) that becomes a small consistent
+win on ESM2-150M (+0.027, CI [+0.010, +0.045], every seed). A confident claim I
+had written here -- that a stronger embedding "could only weaken the model's
+case" -- was falsified by the 150M run, which helped the non-linear head more
+than the linear controls; the correction is in RESULTS_REAL.md. The remaining
+items below are about widening the measurement, not whether one exists. They are ordered by
 what most constrains any claim the project can make:
 
 0. **Real data.** Until now nothing in this repository had been run on real
