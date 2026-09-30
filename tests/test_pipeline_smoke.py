@@ -203,3 +203,24 @@ def test_pert_split_warns_that_genes_appear_on_both_sides(synth):
     assert "appear in BOTH splits" in log
     n = int(log.split("WARNING: ")[1].split(" target genes")[0])
     assert n > 0, "the synthetic datasets share target genes, so this must be >0"
+
+
+def test_panel_is_ranked_on_training_items_by_default(trained):
+    """ERRATA E15: the genes the model is scored on must not be chosen using the
+    held-out perturbations' expression."""
+    _, log = trained
+    assert "[hvg] panel ranked on" in log and "TRAINING" in log
+    assert "WARNING" not in log.split("[mask]")[0].split("[hvg]")[1]
+
+
+def test_the_test_visible_panel_is_available_but_says_so_loudly(synth):
+    """--hvg_from all reproduces the pre-fix behaviour, so its size can be
+    measured; it must never be mistaken for the default."""
+    log = _run(["src/maprna_p3/train_p3.py",
+                "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+                "--esm_table", str(synth / "esm.pt"),
+                "--out_dir", str(synth / "p3_hvg_all"), "--epochs", "1",
+                "--n_hvg", "40", "--batch_size", "8",
+                "--split_by", "target_gene", "--hvg_from", "all"])
+    assert "[hvg] WARNING" in log
+    assert "chosen with the test split visible" in log

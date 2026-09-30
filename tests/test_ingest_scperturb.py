@@ -164,3 +164,57 @@ def test_duplicate_gene_symbols_are_summed_as_counts_not_silently_dropped(tmp_pa
     exp = np.log1p(merged / merged.sum() * 1e4)[0]
     assert np.allclose(np.asarray(a.X)[list(a.obs.condition).index("MYC+ctrl")],
                        exp, atol=1e-5)
+
+
+# --------------------------------------------------------------------------
+# cells mode -- the input the external baselines actually need
+# --------------------------------------------------------------------------
+
+def test_cells_mode_emits_labelled_cells_whose_mean_is_the_pseudobulk_export(tmp_path):
+    """The two modes must describe the same data.
+
+    GEARS and CPA are cell-level models, so handing them one pseudobulk row per
+    condition would handicap them, and a comparison that handicaps the external
+    baseline proves nothing. They therefore read a different file -- and that only
+    stays a fair comparison if the two files agree, which is what this checks.
+    """
+    rng = np.random.default_rng(0)
+    pert = ["A"] * 6 + ["B"] * 4 + ["control"] * 5
+    counts = rng.integers(0, 30, size=(len(pert), 6)).astype(np.float32)
+    counts[counts.sum(1) == 0, 0] = 1                      # no empty cells
+    syms = [f"G{i}" for i in range(6)]
+    src = write_src(tmp_path / "s.h5ad", pert, counts, syms,
+                    nperts=[1] * 10 + [0] * 5)
+
+    pb, cl = tmp_path / "pb.h5ad", tmp_path / "cl.h5ad"
+    assert run(src, pb, "--min_cells", "1", "--n_ctrl", "5").returncode == 0
+    p = run(src, cl, "--min_cells", "1", "--n_ctrl", "5", "--mode", "cells")
+    assert p.returncode == 0, p.stdout + p.stderr
+
+    A, B = ad.read_h5ad(pb), ad.read_h5ad(cl)
+    Xc = np.asarray(B.X.todense() if hasattr(B.X, "todense") else B.X)
+    assert (B.obs.condition == "A+ctrl").sum() == 6
+    assert (B.obs.condition == "B+ctrl").sum() == 4
+    assert int(B.obs.control.sum()) == 5
+    for cond in ("A+ctrl", "B+ctrl"):
+        got = Xc[(B.obs.condition == cond).values].mean(0)
+        exp = np.asarray(A.X)[list(A.obs.condition).index(cond)]
+        assert np.allclose(got, exp, atol=1e-5), \
+            f"{cond}: the cell export and the pseudobulk export disagree"
+
+
+def test_cells_mode_cap_subsamples_and_records_it(tmp_path):
+    pert = ["A"] * 10 + ["control"] * 3
+    counts = np.ones((len(pert), 4), dtype=np.float32)
+    src = write_src(tmp_path / "s.h5ad", pert, counts, [f"G{i}" for i in range(4)],
+                    nperts=[1] * 10 + [0] * 3)
+    out = tmp_path / "o.h5ad"
+    assert run(src, out, "--min_cells", "1", "--mode", "cells",
+               "--max_cells_per_pert", "4").returncode == 0
+    a = ad.read_h5ad(out)
+    assert (a.obs.condition == "A+ctrl").sum() == 4
+    prov = json.loads(Path(str(out).replace(".h5ad", ".provenance.json")).read_text())
+    assert prov["mode"] == "cells" and prov["max_cells_per_pert"] == 4
+    assert prov["n_perturbed_cells_kept"] == 4
+    # the gate still sees the TRUE count, not the capped one
+    assert prov["cells_per_pert_median"] == 10.0

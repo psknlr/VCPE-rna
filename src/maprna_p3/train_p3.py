@@ -81,29 +81,25 @@ def parse_args():
                         "for release.\n")
     p.add_argument("--knn_k", type=int, default=10,
                    help="neighbours for the ESM2 retrieval control baseline")
+    p.add_argument("--hvg_from", choices=("train", "all"), default="train",
+                   help="which perturbations the response panel is ranked on. train "
+                        "(default) is correct. all reproduces the earlier behaviour, "
+                        "in which the 2000 genes the model is scored on were chosen "
+                        "by variance across every perturbation including the held-out "
+                        "ones -- feature selection with the test split visible "
+                        "(docs/ERRATA.md E15). Kept so that effect can be measured.")
     p.add_argument("--d_model", type=int, default=256)
     return p.parse_args()
 
 
 # ---------------- data ----------------
 
-def build_dev_data(args):
-    sym2row, esm_dim = build_symbol2row(args.esm_table)
-    kd = load_kd_datasets(args.data_dirs, sym2row, min_cells=args.min_cells)
-    hvg_rows = make_hvg_list(kd, n_hvg=args.n_hvg)
+def split_items(args, kd, sym2row):
+    """All usable (dataset, condition) items and their train/test split.
 
-    # dataset-level control mean over HVG (deterministic ctrl baseline)
-    ctrl_mean = np.zeros((len(kd["X_ctrl"]), len(hvg_rows)), dtype=np.float32)
-    for di, (Xc, rows) in enumerate(zip(kd["X_ctrl"], kd["row_of_gene"])):
-        cm = Xc.mean(axis=0)
-        row2col = {int(r): c for c, r in enumerate(rows)}
-        cols = np.array([row2col.get(int(hr), -1) for hr in hvg_rows], dtype=np.int64)
-        ok = cols >= 0
-        ctrl_mean[di, ok] = cm[cols[ok]]
-    # z-score across genes within each dataset (feature scale for the MLP)
-    mu, sd = ctrl_mean.mean(axis=1, keepdims=True), ctrl_mean.std(axis=1, keepdims=True) + 1e-6
-    ctrl_feat_all = (ctrl_mean - mu) / sd
-
+    Separated out so that it can run before the response panel is chosen; see
+    build_dev_data.
+    """
     # perturbation items: all (ds, condition) with enough cells and a resolvable target
     items = []
     for di in range(len(kd["X_pert"])):
@@ -156,6 +152,47 @@ def build_dev_data(args):
               f"test {len(test_items)} | WARNING: {len(overlap)} target genes "
               f"appear in BOTH splits -- results are not an unseen-gene estimate; "
               f"use --split_by target_gene for that.", flush=True)
+    return train_items, test_items
+
+
+def build_dev_data(args):
+    sym2row, esm_dim = build_symbol2row(args.esm_table)
+    kd = load_kd_datasets(args.data_dirs, sym2row, min_cells=args.min_cells)
+
+    # The split is decided BEFORE the response panel, so that the panel can be
+    # ranked on training perturbations only (docs/ERRATA.md E15). It needs nothing
+    # but the perturbation labels, and it draws from a generator of its own, so
+    # moving it here leaves the split itself unchanged.
+    train_items, test_items = split_items(args, kd, sym2row)
+    if getattr(args, "hvg_from", "train") == "train":
+        tr_set = set(train_items)
+        keep_rows = []
+        for di in range(len(kd["X_pert"])):
+            cp = kd["pert_labels"][di]
+            keep_rows.append(np.array([k for k, c in enumerate(cp)
+                                       if (di, str(c)) in tr_set], dtype=np.int64))
+        hvg_rows = make_hvg_list(kd, n_hvg=args.n_hvg, keep_rows=keep_rows)
+        print(f"[hvg] panel ranked on {sum(len(k) for k in keep_rows)} TRAINING "
+              f"perturbations only", flush=True)
+    else:
+        hvg_rows = make_hvg_list(kd, n_hvg=args.n_hvg)
+        print("[hvg] WARNING: panel ranked on ALL perturbations including the held-out "
+              "genes, so the genes the model is scored on were chosen with the test "
+              "split visible. Kept only to measure that effect (ERRATA E15); use "
+              "--hvg_from train.", flush=True)
+
+    # dataset-level control mean over HVG (deterministic ctrl baseline)
+    ctrl_mean = np.zeros((len(kd["X_ctrl"]), len(hvg_rows)), dtype=np.float32)
+    for di, (Xc, rows) in enumerate(zip(kd["X_ctrl"], kd["row_of_gene"])):
+        cm = Xc.mean(axis=0)
+        row2col = {int(r): c for c, r in enumerate(rows)}
+        cols = np.array([row2col.get(int(hr), -1) for hr in hvg_rows], dtype=np.int64)
+        ok = cols >= 0
+        ctrl_mean[di, ok] = cm[cols[ok]]
+    # z-score across genes within each dataset (feature scale for the MLP)
+    mu, sd = ctrl_mean.mean(axis=1, keepdims=True), ctrl_mean.std(axis=1, keepdims=True) + 1e-6
+    ctrl_feat_all = (ctrl_mean - mu) / sd
+
 
     # Per-dataset lookups, built once. Both of these used to be rebuilt inside the
     # per-item loops below, which is quadratic in a way that only shows up on a real

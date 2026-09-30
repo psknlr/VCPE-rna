@@ -135,14 +135,25 @@ def load_kd_datasets(data_dirs, sym2row, min_cells=3):
                 pert_index=pert_index, gene_names=gene_names, row_of_gene=row_of_gene)
 
 
-def make_hvg_list(kd, n_hvg=2000):
-    """Top-variance genes (on the ESM2-mapped universe) across all datasets."""
+def make_hvg_list(kd, n_hvg=2000, keep_rows=None):
+    """Top-variance genes (on the ESM2-mapped universe) across all datasets.
+
+    keep_rows: optional list, one entry per dataset, of the X_pert row indices to
+    rank on. Pass the TRAINING perturbations only. Ranking on every perturbation
+    -- the behaviour when this is None -- chooses the response panel using the
+    variance of the held-out genes, so the panel the model is scored on was picked
+    with the test split visible (docs/ERRATA.md E15). It is a feature-selection
+    step, not a per-item label, so the leak is mild, but it is a leak.
+    """
     var_per_ds = []
-    for X, rows in zip(kd["X_pert"], kd["row_of_gene"]):
+    for di, (X, rows) in enumerate(zip(kd["X_pert"], kd["row_of_gene"])):
         m = rows >= 0
         if m.sum() == 0:
             continue
-        v = X[:, m].var(axis=0)
+        Xd = X if keep_rows is None else X[keep_rows[di]]
+        if Xd.shape[0] < 2:      # variance of fewer than two items is meaningless
+            continue
+        v = Xd[:, m].var(axis=0)
         var_per_ds.append((rows[m], v))
     # aggregate variance by table row (mean over datasets where gene present)
     agg = {}

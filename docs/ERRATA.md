@@ -535,6 +535,53 @@ isolated one, scoring back in the VCPE environment. Stage 3 shares
 scored differently -- which is E1/E2 one level up. Not yet run on real
 Perturb-seq data.
 
+## E15 — The scored gene panel was chosen with the test split visible
+
+**Defect.** `make_hvg_list` ranked genes by their variance across **every**
+perturbation, and `build_dev_data` called it **before** the train/test split. The
+2000 genes the model is trained and scored on were therefore selected using the
+held-out perturbations' expression.
+
+`src/maprna_p1/ds_knockdown.py:138` (the ranking), `src/maprna_p3/train_p3.py:93`
+(the call, before the split).
+
+This is feature selection on the full data, not a per-item label leak, so it is
+the mildest defect in this document — but it is the kind a reviewer checks, and
+"the held-out genes are genuinely unseen" (E5's whole point) is not true of the
+panel if it is true of the split.
+
+**Fix.** The split now runs first and the panel is ranked on training
+perturbations only (`--hvg_from train`, the default). The split itself is
+untouched: it needs only the perturbation labels and draws from its own
+generator, so moving it earlier leaves it bit-identical. `--hvg_from all`
+reproduces the old behaviour and prints a warning, so the size of the effect can
+be measured rather than asserted.
+
+**Verification.** Three levels:
+
+1. With `--hvg_from all`, every one of the 18 arrays `build_dev_data` returns is
+   byte-identical to the pre-restructure code on real data — so the
+   restructuring changed nothing by itself.
+2. With `--hvg_from train`, `train_items`, `test_items`, `rows_tr`, `rows_te` and
+   `is_inner_val` are unchanged and only `hvg_rows` and what derives from it
+   (`dev`, `fc`, `mask`, `common_fc`, `ctrl_feat_all`) move — i.e. the panel
+   moved and the split did not.
+3. Footprint on Replogle RPE1 + Tian 2021 CRISPRi:
+
+   | `n_hvg` | seed | genes shared | only in the test-visible panel |
+   |---|---|---|---|
+   | 500 | 0 | 491/500 | 9 (1.8%) |
+   | 500 | 1 | 491/500 | 9 (1.8%) |
+   | 2000 | 0 | 1967/2000 | 33 (1.7%) |
+   | 2000 | 1 | 1971/2000 | 29 (1.5%) |
+
+   About 1.7% of the panel differs. It is small because the training split is 85%
+   of the items, so a variance ranking over it barely moves — which is an
+   argument about this dataset pair, not about the practice.
+
+**Status.** Fixed; default changed. The effect on the reported score is measured
+with the real table, not with the placeholder used for the wiring check above.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically

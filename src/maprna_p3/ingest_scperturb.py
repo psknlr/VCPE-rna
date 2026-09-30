@@ -70,6 +70,17 @@ def parse_args():
                    help="per-cell library size the counts are scaled to before log1p")
     p.add_argument("--block", type=int, default=4096, help="rows read per block")
     p.add_argument("--seed", type=int, default=0, help="control-cell subsample")
+    p.add_argument("--mode", choices=("pseudobulk", "cells"), default="pseudobulk",
+                   help="pseudobulk (default): one aggregated row per perturbation, "
+                        "which is the quantity the P3 head predicts. cells: keep "
+                        "individual normalised cells, for the external baselines "
+                        "(GEARS, CPA) which are cell-level models -- feeding those "
+                        "one row per condition would handicap them, and a comparison "
+                        "that handicaps the external baseline is worthless.")
+    p.add_argument("--max_cells_per_pert", type=int, default=0,
+                   help="cells mode only: subsample each perturbation to at most this "
+                        "many cells (0 = keep all). The full matrix does not fit in "
+                        "memory for the larger screens.")
     p.add_argument("--max_load_gb", type=float, default=4.0,
                    help="a CSC matrix has to be loaded whole rather than streamed; "
                         "refuse instead if that would need more than this")
@@ -142,6 +153,19 @@ def main():
     cond_to_k = {c: k for k, c in enumerate(kept_conds)}
 
     rng = np.random.default_rng(args.seed)
+    # cells mode: choose which perturbed cells to keep before streaming, so the
+    # pass is a gather and the output size is known in advance
+    keep_cell = None
+    if args.mode == "cells":
+        sel = []
+        for cnd in kept_conds:
+            ix = np.where(cond == cnd)[0]
+            if args.max_cells_per_pert and len(ix) > args.max_cells_per_pert:
+                ix = np.sort(rng.choice(ix, args.max_cells_per_pert, replace=False))
+            sel.append(ix)
+        keep_cell = np.sort(np.concatenate(sel)) if sel else np.array([], dtype=int)
+        print(f"[ingest] cells mode: keeping {len(keep_cell)} perturbed cells "
+              f"(cap {args.max_cells_per_pert or 'none'} per perturbation)", flush=True)
     ctrl_idx = np.where(ctrl_mask)[0]
     if len(ctrl_idx) > args.n_ctrl:
         ctrl_idx = np.sort(rng.choice(ctrl_idx, args.n_ctrl, replace=False))
@@ -153,6 +177,8 @@ def main():
     acc = np.zeros((len(kept_conds), n_genes), dtype=np.float64)
     n_acc = np.zeros(len(kept_conds), dtype=np.int64)
     ctrl_X = np.zeros((len(ctrl_idx), n_genes), dtype=np.float32)
+    cell_pos = {int(i): j for j, i in enumerate(keep_cell)} if keep_cell is not None else {}
+    cell_rows = [None] * len(cell_pos)
     n_empty = 0
     with h5py.File(args.h5ad, "r") as h:
         Xh = h["X"]
@@ -211,6 +237,9 @@ def main():
                     if k is not None:
                         acc[k] += blk[r]
                         n_acc[k] += 1
+                        j = cell_pos.get(i)
+                        if j is not None:
+                            cell_rows[j] = sp.csr_matrix(blk[r][None, :])
             if (lo // args.block) % 10 == 0:
                 print(f"[ingest]   {hi}/{n_cells} cells", flush=True)
     if n_empty:
@@ -220,22 +249,39 @@ def main():
     bulk = (acc / n_acc[:, None]).astype(np.float32)
 
     # --- write -----------------------------------------------------------------
-    X_out = np.vstack([bulk, ctrl_X])
-    obs_out = pd.DataFrame(dict(
-        condition=np.concatenate([kept_conds, np.array(["ctrl"] * len(ctrl_idx))]),
-        control=np.concatenate([np.zeros(len(kept_conds), int),
-                                np.ones(len(ctrl_idx), int)]),
-        n_cells=np.concatenate([n_acc, np.ones(len(ctrl_idx), int)]),
-        is_pseudobulk=np.concatenate([np.ones(len(kept_conds), int),
-                                      np.zeros(len(ctrl_idx), int)]),
-    ))
-    obs_out.index = [f"pb_{c}" for c in kept_conds] + [f"ctrl_{i}" for i in ctrl_idx]
+    if args.mode == "cells":
+        assert all(r is not None for r in cell_rows), "a selected cell was never read"
+        X_out = sp.vstack(cell_rows + [sp.csr_matrix(ctrl_X)], format="csr")
+        pert_conds_out = cond[keep_cell]
+        obs_out = pd.DataFrame(dict(
+            condition=np.concatenate([pert_conds_out,
+                                      np.array(["ctrl"] * len(ctrl_idx))]),
+            control=np.concatenate([np.zeros(len(keep_cell), int),
+                                    np.ones(len(ctrl_idx), int)]),
+            n_cells=np.ones(len(keep_cell) + len(ctrl_idx), int),
+            is_pseudobulk=np.zeros(len(keep_cell) + len(ctrl_idx), int),
+        ))
+        obs_out.index = ([f"cell_{i}" for i in keep_cell]
+                         + [f"ctrl_{i}" for i in ctrl_idx])
+    else:
+        X_out = np.vstack([bulk, ctrl_X])
+        obs_out = pd.DataFrame(dict(
+            condition=np.concatenate([kept_conds, np.array(["ctrl"] * len(ctrl_idx))]),
+            control=np.concatenate([np.zeros(len(kept_conds), int),
+                                    np.ones(len(ctrl_idx), int)]),
+            n_cells=np.concatenate([n_acc, np.ones(len(ctrl_idx), int)]),
+            is_pseudobulk=np.concatenate([np.ones(len(kept_conds), int),
+                                          np.zeros(len(ctrl_idx), int)]),
+        ))
+        obs_out.index = [f"pb_{c}" for c in kept_conds] + [f"ctrl_{i}" for i in ctrl_idx]
     var_out = pd.DataFrame(dict(gene_name=uniq_syms), index=uniq_syms)
     out = ad.AnnData(X=X_out, obs=obs_out, var=var_out)
     out.uns["ingest"] = dict(
         source=os.path.abspath(args.h5ad), normalisation=f"log1p(counts/total*{args.target_sum:g})",
-        min_cells=args.min_cells, note="perturbation rows are pseudobulk means; run "
-                                       "train_p3.py with --min_cells 1")
+        min_cells=args.min_cells, mode=args.mode,
+        note=("perturbation rows are pseudobulk means; run train_p3.py with "
+              "--min_cells 1" if args.mode == "pseudobulk" else
+              "individual normalised cells; the cell-count gate already ran here"))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     out.write_h5ad(args.out)
     write_json(str(Path(args.out).with_suffix(".provenance.json")), dict(
@@ -248,11 +294,18 @@ def main():
         n_cells_zero_counts=int(n_empty),
         normalisation=f"per cell: counts / total * {args.target_sum:g}, then log1p; "
                       "applied BEFORE the pseudobulk mean",
-        downstream_requirement="train_p3.py --min_cells 1 (the cell-count gate ran here)",
+        mode=args.mode,
+        max_cells_per_pert=args.max_cells_per_pert,
+        n_perturbed_cells_kept=(int(len(keep_cell)) if keep_cell is not None else None),
+        downstream_requirement=("train_p3.py --min_cells 1 (the cell-count gate ran "
+                                "here)" if args.mode == "pseudobulk" else
+                                "cell-level input for the external baselines; the "
+                                "cell-count gate already ran here"),
     ), args=args)
-    print(f"[ingest] wrote {args.out}: {X_out.shape[0]} rows "
-          f"({len(kept_conds)} pseudobulk + {len(ctrl_idx)} ctrl) x {n_genes} genes",
-          flush=True)
+    n_pert_rows = len(keep_cell) if keep_cell is not None else len(kept_conds)
+    print(f"[ingest] wrote {args.out}: {X_out.shape[0]} rows ({n_pert_rows} "
+          f"{'cells' if args.mode == 'cells' else 'pseudobulk'} + {len(ctrl_idx)} "
+          f"ctrl) x {n_genes} genes", flush=True)
 
 
 if __name__ == "__main__":

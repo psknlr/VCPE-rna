@@ -34,6 +34,10 @@ def main():
     p.add_argument("--rna_encoder_ckpt", default="")
     p.add_argument("--fasta", default="")
     p.add_argument("--n_hvg", type=int, default=2000)
+    p.add_argument("--hvg_from", choices=("train", "all"), default="train",
+                   help="which perturbations the response panel is ranked on. Must "
+                        "match the run being compared against: the panel is part of "
+                        "the protocol, not a detail (docs/ERRATA.md E15).")
     p.add_argument("--test_frac", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--min_cells", type=int, default=3)
