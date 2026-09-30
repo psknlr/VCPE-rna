@@ -64,6 +64,9 @@ def _fake_reports(tmp_path, per_seed):
         d.mkdir(parents=True)
         (d / "final_report.json").write_text(json.dumps({
             "pearson_dev": model, "selected_epoch": 3, "split_by": "target_gene",
+            # copied from what train_p3 actually writes: a report that does not
+            # name its estimator cannot be compared with anything (ERRATA E4)
+            "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r",
             "baselines": {"knn_esm2": {"pearson_dev": knn},
                           "zero": {"pearson_dev": 0.0}}}))
     out = tmp_path / "summary.json"
@@ -156,6 +159,7 @@ def test_it_refuses_to_average_seeds_run_under_different_protocols(tmp_path):
         d.mkdir()
         (d / "final_report.json").write_text(json.dumps(dict(
             pearson_dev=0.1 + seed * 0.01, split_by="target_gene", selected_epoch=3,
+            pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r",
             baselines=dict(zero=dict(pearson_dev=0.0)),
             provenance=dict(args=dict(n_hvg=n_hvg, split_by="target_gene",
                                       data_dirs=["a.h5ad"], hvg_from="train",
@@ -176,6 +180,7 @@ def test_matching_seeds_are_aggregated_and_the_protocol_is_stated_once(tmp_path)
         d.mkdir()
         (d / "final_report.json").write_text(json.dumps(dict(
             pearson_dev=0.10 + seed * 0.02, split_by="target_gene", selected_epoch=3,
+            pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r",
             baselines=dict(zero=dict(pearson_dev=0.0),
                            knn_esm2=dict(pearson_dev=0.20)),
             provenance=dict(args=dict(n_hvg=500, split_by="target_gene",
@@ -194,3 +199,39 @@ def test_matching_seeds_are_aggregated_and_the_protocol_is_stated_once(tmp_path)
     # and the honest verdict is still reported
     assert rep["paired_vs_baselines"]["knn_esm2"]["verdict"] == \
         "model loses to this baseline on every seed"
+
+
+def test_it_refuses_seeds_that_do_not_name_their_estimator(tmp_path):
+    """A mean whose estimator is unknown cannot be compared with anything, which
+    is what made ERRATA E4 possible: two definitions of pearson_dev were
+    subtracted from one another because neither number carried its definition."""
+    for seed in (0, 1):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.1, split_by="target_gene", selected_epoch=3,
+            baselines=dict(zero=dict(pearson_dev=0.0)),
+            provenance=dict(args=dict(n_hvg=500)))))
+    p = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing"],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0
+    assert "estimator" in (p.stdout + p.stderr)
+
+
+def test_it_refuses_seeds_that_used_different_estimators(tmp_path):
+    for seed, est in ((0, "mean_over_perturbations_of_within_perturbation_r"), (1, "pooled")):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.1, split_by="target_gene", selected_epoch=3,
+            pearson_dev_estimator=est,
+            baselines=dict(zero=dict(pearson_dev=0.0)),
+            provenance=dict(args=dict(n_hvg=500)))))
+    p = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing"],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0
+    assert "E4" in (p.stdout + p.stderr)

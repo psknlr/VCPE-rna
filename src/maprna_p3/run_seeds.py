@@ -149,6 +149,20 @@ def main():
             f"would average different experiments: {disagree}")
     summary["protocol"] = proto
 
+    # The estimator name travels with the number or E4 happens again: two
+    # definitions of "pearson_dev" were once subtracted from one another. A
+    # multi-seed mean that does not say which estimator it averaged cannot be
+    # placed beside an external baseline's number.
+    ests = {str(reports[s].get("pearson_dev_estimator")) for s in seeds}
+    if len(ests) != 1:
+        raise SystemExit(f"the seeds used different estimators: {sorted(ests)}. "
+                         "Averaging them would repeat ERRATA E4.")
+    est = next(iter(ests))
+    if est in ("None", ""):
+        raise SystemExit("the seed reports do not name their estimator, so this "
+                         "mean cannot be compared with anything (ERRATA E4).")
+    summary["pearson_dev_estimator"] = est
+
     # paired differences: model and baselines share a seed, hence a split
     paired = {}
     for n in base_names:

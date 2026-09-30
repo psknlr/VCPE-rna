@@ -25,8 +25,10 @@ def seeds_report(path, value, seeds=(0, 1, 2), **over):
              split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
              esm_table="/t/esm.pt", seeds=list(seeds))
     a.update(over)
-    rep = dict(model=dict(mean=value, n=len(seeds), sd=0.01, min=value - .01,
-                         max=value + .01),
+    rep = dict(pearson_dev_estimator=
+                   "mean_over_perturbations_of_within_perturbation_r",
+               model=dict(mean=value, n=len(seeds), sd=0.01, min=value - .01,
+                          max=value + .01),
                baselines=dict(knn_esm2=dict(mean=0.20, n=len(seeds), sd=0.02,
                                             min=.18, max=.22)),
                # key name copied from run_seeds.summarise/paired output, not invented:
@@ -42,7 +44,9 @@ def gears_report(path, value, **over):
              split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
              esm_table="/t/esm.pt", seed=0)
     a.update(over)
-    rep = dict(gears=dict(pearson_dev=value), gears_across_runs=dict(n_runs=5, sd=.03,
+    rep = dict(gears=dict(pearson_dev=value, pearson_dev_estimator=
+                          "mean_over_perturbations_of_within_perturbation_r"),
+               gears_across_runs=dict(n_runs=5, sd=.03,
                                                                     min=.01, max=.12),
                fairness=dict(not_controlled=["tuning effort differs"]), **prov(**a))
     Path(path).write_text(json.dumps(rep))
@@ -203,3 +207,17 @@ def test_it_refuses_rows_built_from_different_embedding_tables(tmp_path):
     p = run("--reports", str(tmp_path / "s.json"), str(tmp_path / "g.json"),
             "--out_json", str(tmp_path / "o.json"))
     assert p.returncode == 2 and "esm_table" in p.stderr
+
+
+def test_a_multi_seed_mean_cannot_hide_a_different_estimator(tmp_path):
+    """The multi-seed summary used to carry no estimator name, so it could sit
+    beside a pooled-correlation row undetected -- E4 with extra steps."""
+    seeds_report(tmp_path / "s.json", 0.05, seeds=(0,))
+    rep = json.loads((tmp_path / "s.json").read_text())
+    rep["pearson_dev_estimator"] = "pooled"
+    (tmp_path / "s.json").write_text(json.dumps(rep))
+    gears_report(tmp_path / "g.json", 0.15)
+    p = run("--reports", str(tmp_path / "s.json"), str(tmp_path / "g.json"),
+            "--out_json", str(tmp_path / "o.json"))
+    assert p.returncode != 0
+    assert "estimator" in p.stderr and "E4" in p.stderr

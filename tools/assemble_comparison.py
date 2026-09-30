@@ -119,6 +119,7 @@ def rows_of(path, rep, metric):
         m = rep.get("model", {})
         rows.append(dict(label="P3 head", value=m.get("mean"), n=m.get("n"),
                          sd=m.get("sd"), lo=m.get("min"), hi=m.get("max"),
+                         estimator=rep.get("pearson_dev_estimator"),
                          kind="multi-seed mean", source=src))
         for name, b in (rep.get("baselines") or {}).items():
             pr = (rep.get("paired_vs_baselines") or {}).get(name, {})
@@ -183,9 +184,6 @@ def main():
         protos[path] = protocol_of(rep)
         fair = (rep.get("fairness") or {}).get("not_controlled") or []
         caveats += [f"{os.path.basename(path)}: {c}" for c in fair]
-        for r in rows:
-            if r.get("estimator"):
-                estimators.add(r["estimator"])
 
     # --- the refusal ---------------------------------------------------------
     allowed = set(args.allow)
@@ -210,6 +208,7 @@ def main():
             f"PROTOCOL MISMATCH ALLOWED: {field} differs between rows "
             f"({ {os.path.basename(p): v for p, v in differ[field].items()} }). "
             "The rows are not strictly comparable.")
+    estimators = {r["estimator"] for r in rows if r.get("estimator")}
     if len(estimators) > 1:
         raise SystemExit(f"two different estimators in one table: {sorted(estimators)}. "
                          "This is ERRATA E4 exactly; refusing.")
