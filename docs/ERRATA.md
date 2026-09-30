@@ -758,10 +758,23 @@ what most constrains any claim the project can make:
    **overstates** the effect, because zeroing a vector is off-distribution and
    flatters the floor; the shuffle ablation preserves input statistics and is the
    number to quote. Third, three of the four identity channels leave the
-   prediction bit-identical -- two of them inert by configuration (no RNA
-   encoder, no STRING graph), and `is_target` because at `--n_hvg 500` the
-   perturbed gene is in the panel for only ~6% of perturbations. In this
-   configuration the four-channel architecture is effectively one channel.
+   prediction bit-identical, so in this configuration the four-channel
+   architecture is effectively **one** channel. The RNA axis is inert because no
+   encoder was loaded. `is_target` is inert because at `--n_hvg 500` the
+   perturbed gene is in the response panel for only ~6% of perturbations.
+
+   `is_neighbor` was inert because no graph had been built -- so one was
+   ([RESULTS_REAL.md](RESULTS_REAL.md)): STRING v12.0, 443,966 edges at
+   combined_score >= 700, 77% gene coverage. It made almost no difference
+   (**+0.0005**, an order of magnitude below the seed sd), and the reason is
+   structural rather than biological: a sparse binary partner flag over the output
+   panel fires on **0.27%** of scored (item, gene) cells, and that fraction is
+   about degree/gene-universe **whatever the panel size**, so no amount of data
+   rescues it. Folding the same graph densely into the embedding instead --
+   `[own || mean(partners)]`, handed identically to the head and to both ESM2
+   controls -- produced the largest gain measured anywhere in this project
+   (ridge +0.072, head +0.036). The channel was the wrong place to put the
+   information, not the wrong information.
 5. Report the positional-embedding ablation (E9) rather than assuming position
    matters.
 6. ~~Near-duplicate sequence analysis for ASO Atlas~~ — **implemented**
