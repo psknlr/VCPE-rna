@@ -225,20 +225,54 @@ def main():
 
     floor = report["all_off"]["pearson_dev"]
     intact = report["intact"]["pearson_dev"]
+    shuf = report.get("esm_shuffle", {}).get("pearson_dev")
+    # Two floors, and they do NOT agree. Zeroing a vector takes the input
+    # off-distribution, so the model emits something degenerate and the floor is
+    # flattered -- which inflates the apparent conditioning gain. Permuting the
+    # vectors across perturbations preserves the input statistics exactly and
+    # destroys only the identity mapping, so it is the better-controlled floor and
+    # the smaller, defensible gain. Measured on real data: zero floor 0.006 vs
+    # shuffle floor 0.116 on an intact 0.288, i.e. 98% versus 60% of the score
+    # attributed to conditioning. Report the shuffle number.
+    gain_zero = intact - floor
+    gain_shuffle = (intact - shuf) if shuf is not None else None
     report["interpretation"] = dict(
         intact_pearson_dev=intact,
-        no_conditioning_floor=floor,
-        conditioning_gain=intact - floor,
+        no_conditioning_floor_zeroed=floor,
+        no_conditioning_floor_shuffled=shuf,
+        conditioning_gain=gain_shuffle if gain_shuffle is not None else gain_zero,
+        conditioning_gain_basis=("esm_shuffle (preserves input statistics)"
+                                 if gain_shuffle is not None else "all_off (zeroed)"),
+        conditioning_gain_vs_zeroed_floor=gain_zero,
         note=("The defensible claim about conditioning is the gap between the "
-              "intact model and the all_off floor, not the intact value itself. "
-              "A large ds_shuffle delta means dataset-level commonality is "
+              "intact model and a floor that destroys gene identity WITHOUT "
+              "changing the input distribution -- that is esm_shuffle, not "
+              "all_off. Zeroing is off-distribution and flatters the floor, so "
+              "the gain against it is an upper bound and should not be quoted "
+              "alone. A large ds_shuffle delta means dataset-level commonality is "
               "carrying part of the score, which is the same class of artefact "
               "as the P2 shared-response shortcut."))
-    print(f"\nintact {intact:.4f} - no-conditioning floor {floor:.4f} "
-          f"= conditioning gain {intact - floor:+.4f}", flush=True)
-    if intact - floor < 0.05:
+    print(f"\nintact {intact:.4f} | floor: zeroed {floor:.4f}, shuffled "
+          f"{'n/a' if shuf is None else f'{shuf:.4f}'}", flush=True)
+    if gain_shuffle is not None:
+        print(f"conditioning gain {gain_shuffle:+.4f} (vs the shuffled floor -- "
+              f"quote this one); {gain_zero:+.4f} vs the zeroed floor, an upper "
+              f"bound", flush=True)
+    else:
+        print(f"conditioning gain {gain_zero:+.4f} (vs the zeroed floor only)",
+              flush=True)
+    reportable = gain_shuffle if gain_shuffle is not None else gain_zero
+    if reportable < 0.05:
         print("WARNING: the model achieves nearly its full score with NO "
               "perturbation information. Conditioning is not contributing.",
+              flush=True)
+    inert = [k for k, v in report.items()
+             if isinstance(v, dict) and k != "intact"
+             and v.get("r_vs_real") is not None and v["r_vs_real"] > 0.99999]
+    if inert:
+        print(f"NOTE: these axes left the prediction bit-identical, so they carry "
+              f"nothing in this configuration: {inert}. Check whether each is "
+              f"inert by design (its input was not loaded) or unexpectedly dead.",
               flush=True)
 
     if args.out_json:

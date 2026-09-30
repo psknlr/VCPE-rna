@@ -109,10 +109,21 @@ real, if modest, advantage (+0.027 over ridge, +0.081 over k-NN).
    by ~0.03 on a good embedding, ties it on a poor one" is the honest claim; it is
    not the large margin the withdrawn numbers asserted.
 
+3. **What the model has is real conditioning, not a shared-response shortcut.**
+   Permuting the target-gene vectors costs -0.172 of the +0.288 score and changes
+   the prediction itself drastically; shuffling the dataset embedding costs only
+   -0.064. The failure that started this whole errata -- a model scoring well
+   while ignoring which gene was perturbed -- is absent here, checked with the
+   same instrument that exposed it. Details and an important caveat about which
+   floor to quote are in the ablation section below.
+
 The embedding matters more than I expected, and in the opposite direction (next
 section). The value of the architecture over a linear map is **modest and
 established only on the stronger embedding** -- a narrower claim than the
 withdrawn numbers made, but not the flat negative the 35M table alone suggested.
+What is now also established, and was not before, is that the score rests on
+gene-specific conditioning rather than on the artefact this project twice
+mistook for signal.
 
 ## A prediction I got wrong, recorded because getting it wrong is the point
 
@@ -145,6 +156,72 @@ day on this 4-CPU host and has not been run. The claim stands where it was
 measured: at 150M, a small and consistent advantage over a linear baseline, on a
 mid-sized embedding, on two CRISPRi screens whose smaller member (Table D) is at
 the floor for every method.
+
+## Is the conditioning real? (per-axis ablation, ERRATA E7)
+
+The score above only means something if it depends on *which gene was perturbed*.
+The P2 erratum exists because once it did not: the prediction was unchanged when
+conditioning was removed (`ablation_r = 1.000`). Run on real data for the first
+time, on the 150M seed-0 checkpoint (352 held-out items):
+
+| axis disabled | r vs intact prediction | pearson_dev | delta |
+|---|---|---|---|
+| intact | 1.0000 | +0.2878 | — |
+| **esm_zero** (target vector -> 0) | 0.3163 | +0.0056 | **-0.2823** |
+| **esm_shuffle** (target vectors permuted) | 0.1609 | +0.1161 | **-0.1717** |
+| ds_shuffle (dataset embedding permuted) | 0.8347 | +0.2244 | -0.0635 |
+| rna_off | 1.0000 | +0.2878 | 0.0000 |
+| is_tgt_off / is_tgt_shuffle | 1.0000 | +0.2878 | 0.0000 |
+| is_nb_off / is_nb_shuffle | 1.0000 | +0.2878 | 0.0000 |
+| all_off | 0.3163 | +0.0056 | -0.2822 |
+
+**The conditioning is real.** Destroying the target-gene identity collapses the
+score to the floor, and the prediction itself changes drastically (r drops to
+0.32). This is the precise opposite of the P2 failure mode, measured the same way
+that exposed it. `ds_shuffle` costs only -0.064, so dataset-level commonality is
+carrying a small part of the score rather than the bulk -- the P2 shared-response
+shortcut is absent here.
+
+**But "98% of the score is conditioning" would be an overstatement, and the
+script's own `conditioning_gain` (+0.282) invites it.** Zeroing a vector pushes
+the input off-distribution, so the model produces something degenerate and the
+floor is flattered. `esm_shuffle` is the better-controlled ablation: it preserves
+the input statistics exactly and destroys only the identity mapping. It leaves
++0.116. So the defensible claim is that **at least ~60% of the score
+(-0.172 of +0.288) is gene-specific conditioning**, not 98%. Both numbers are in
+the table; the shuffle one is the one to quote.
+
+**Three of the four identity channels are inert**, to the bit: `rna_off`,
+`is_tgt_*` and `is_nb_*` leave the prediction bit-identical (r = 1.0000,
+delta = 0.0000), and `esm_zero` and `all_off` are the same number. All the
+conditioning flows through the target gene's ESM2 vector alone. Two of those are
+inert by configuration rather than by defect -- the RNA encoder and the STRING
+neighbour graph were not loaded for this run. `is_target` is different: it marks
+whether the perturbed gene is itself in the response panel, and at `--n_hvg 500`
+out of ~8700 genes that is true for only ~6% of perturbations, so the channel is
+almost always all-zero and its contribution cannot be measured here. The
+architecture is described as four identity channels; in this configuration it is
+**effectively a one-channel model**, and a wider panel would be needed to say
+whether `is_target` carries anything at all.
+
+## E6 on real data: the masking A/B, finally measured
+
+Same configuration, same seed, one flag apart (ERRATA E6, previously deferred):
+
+| | model | train_mean | knn_esm2 | ridge_esm2 | measured fraction |
+|---|---|---|---|---|---|
+| masked (default) | +0.2878 | +0.0120 | +0.1877 | +0.2428 | 0.9986 |
+| `--no_mask` | +0.2874 | +0.0166 | +0.1881 | +0.2429 | 1.0000 |
+
+**The prediction made in advance holds.** With 99.86% of the panel measured, the
+constant block is 0.14% of the matrix and unmasking moves the model by -0.0004 --
+nothing. The mechanism is still visible in the right place and the right
+direction: `train_mean`, which carries no perturbation information at all and
+must sit at the floor, gains **+0.0046** when unmasked. That is E6 in miniature,
+and the reason it is miniature is the dataset pair, not the defect: these two
+screens overlap almost completely. It says nothing about the magnitude in the
+withdrawn runs, which combined a genome-wide screen with a ~5k-gene panel. Do not
+quote one as an estimate of the other.
 
 ## A scale check that matters for how Table A is read
 

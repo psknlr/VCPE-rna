@@ -637,8 +637,11 @@ a tie on ESM2-35M (paired CI [-0.016, +0.026]) that becomes a small consistent
 win on ESM2-150M (+0.027, CI [+0.010, +0.045], every seed). A confident claim I
 had written here -- that a stronger embedding "could only weaken the model's
 case" -- was falsified by the 150M run, which helped the non-linear head more
-than the linear controls; the correction is in RESULTS_REAL.md. The remaining
-items below are about widening the measurement, not whether one exists. They are ordered by
+than the linear controls; the correction is in RESULTS_REAL.md. The per-axis
+ablation has also now run on real data and the conditioning is genuinely alive --
+permuting the target-gene vectors costs -0.172 of +0.288 -- which is the opposite
+of the P2 failure that started this document. The remaining items below are about
+widening the measurement, not whether one exists. They are ordered by
 what most constrains any claim the project can make:
 
 0. **Real data.** Until now nothing in this repository had been run on real
@@ -716,11 +719,16 @@ what most constrains any claim the project can make:
    pair, measured properly. The original intent, retained for the record:
    re-run every reported number under the corrected protocol and replace the
    withdrawn figures.
-3. Quantify E6 on real data: a `--no_mask` A/B on one checkpoint. The harness
-   exists and the mechanism is demonstrated on synthetic data (see E6, where
-   unmasking lifted the no-information `train_mean` baseline from -0.083 to
-   +0.108). On the real corpus the A/B is **expected to be small and was
-   deferred rather than measured to completion**: the two reachable CRISPRi
+3. ~~Quantify E6 on real data~~ — **DONE**
+   ([RESULTS_REAL.md](RESULTS_REAL.md)). Same config, one flag apart, on the 150M
+   seed-0 run: unmasking moves the model by **-0.0004** (nothing) while lifting
+   `train_mean`, which carries no perturbation information, by **+0.0046**. The
+   mechanism is confirmed in the right direction and the magnitude is negligible
+   here for exactly the reason predicted in advance: 99.86% of the panel is
+   measured, so the constant block is 0.14% of the matrix. It says nothing about
+   the magnitude in the withdrawn runs, which combined a genome-wide screen with
+   a ~5k-gene panel. Superseded detail, retained: the A/B was **expected to be
+   small and was initially deferred**: the two reachable CRISPRi
    screens overlap so heavily that the measured fraction is 0.987, so only ~1.3%
    of the matrix is the constant block the mask removes. The run was started but
    competed with the 150M table build for this 4-CPU host badly enough to be
@@ -739,7 +747,21 @@ what most constrains any claim the project can make:
    floor. Model hooks (`is_tgt_override`, `is_nb_override`,
    `indicator_features`) were added for this; the v2-1a expression gate stays
    keyed to the true `is_target` so that ablating the feature does not also move
-   the gate (which would repeat E7). **Not yet run on real data.**
+   the gate (which would repeat E7).
+
+   **Now run on real data** ([RESULTS_REAL.md](RESULTS_REAL.md)), with two
+   findings. First, the conditioning is real: permuting the target-gene vectors
+   costs **-0.172 of +0.288** and drops the prediction's correlation with the
+   intact one to 0.16, while `ds_shuffle` costs only -0.064. This is the opposite
+   of the P2 failure, measured the same way that exposed it. Second, the
+   script's own `conditioning_gain` (+0.282, against the *zeroed* floor)
+   **overstates** the effect, because zeroing a vector is off-distribution and
+   flatters the floor; the shuffle ablation preserves input statistics and is the
+   number to quote. Third, three of the four identity channels leave the
+   prediction bit-identical -- two of them inert by configuration (no RNA
+   encoder, no STRING graph), and `is_target` because at `--n_hvg 500` the
+   perturbed gene is in the panel for only ~6% of perturbations. In this
+   configuration the four-channel architecture is effectively one channel.
 5. Report the positional-embedding ablation (E9) rather than assuming position
    matters.
 6. ~~Near-duplicate sequence analysis for ASO Atlas~~ — **implemented**

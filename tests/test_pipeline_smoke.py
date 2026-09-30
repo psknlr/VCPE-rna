@@ -266,3 +266,35 @@ def test_run_seeds_output_feeds_the_assembler_without_losing_a_column(synth):
     assert "n/a" not in md.split("Paired per-seed comparison")[1], \
         "a column rendered as n/a, which is how a key mismatch looks"
     assert rep["shared_protocol"]["split_by"] == "target_gene"
+
+
+def test_ablation_quotes_the_shuffle_floor_not_the_zeroed_one(synth, trained):
+    """ERRATA E7 follow-up, found by running the ablation on real data.
+
+    Zeroing the target vector takes the input off-distribution, so the model emits
+    something degenerate and the floor is flattered -- which inflates the apparent
+    conditioning gain. On real data the two floors disagreed badly: 0.006 zeroed
+    versus 0.116 shuffled on an intact 0.288, i.e. 98% versus 60% of the score
+    attributed to conditioning. Permuting preserves the input statistics and
+    destroys only the identity mapping, so it is the honest floor, and the script
+    must report that one as the gain.
+    """
+    out, _ = trained
+    rep = synth / "abl_floors.json"
+    log = _run(["src/maprna_p3/ablate_axes.py",
+                "--ckpt", str(out / "ckpt_p3_best_dev.pt"),
+                "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+                "--esm_table", str(synth / "esm.pt"),
+                "--n_hvg", "40", "--split_by", "target_gene",
+                "--out_json", str(rep)])
+    interp = json.loads(rep.read_text())["report"]["interpretation"]
+    assert "esm_shuffle" in interp["conditioning_gain_basis"], \
+        "the headline gain must be the shuffle-controlled one"
+    assert interp["no_conditioning_floor_shuffled"] is not None
+    assert "conditioning_gain_vs_zeroed_floor" in interp, \
+        "the zeroed-floor gain must still be reported, as an upper bound"
+    # the reported gain is measured against the shuffled floor
+    assert abs(interp["conditioning_gain"]
+               - (interp["intact_pearson_dev"]
+                  - interp["no_conditioning_floor_shuffled"])) < 1e-9
+    assert "upper bound" in interp["note"] or "upper bound" in log
