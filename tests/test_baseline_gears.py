@@ -148,3 +148,25 @@ def test_gears_is_importable_and_exposes_the_api_the_adapter_uses():
         assert callable(getattr(PertData, m)), m
     for m in ("model_initialize", "train", "predict"):
         assert callable(getattr(GEARS, m)), m
+
+
+def test_gears_adapter_refuses_a_pseudobulk_training_file_with_an_explanation():
+    """GEARS dies inside scanpy on a pseudobulk file, naming every perturbation at
+    once, which reads like a data problem rather than the wrong granularity.
+
+    The check is on the source text rather than by running GEARS, because importing
+    GEARS to prove the message exists costs minutes and the message is the point.
+    """
+    src = (ROOT / "src" / "maprna_p3" / "baseline_gears.py").read_text()
+    assert "rank_genes_groups" in src, "the failure it guards against is not named"
+    assert "--mode cells" in src, "the message does not say how to fix it"
+    assert "single row" in src or "a single row" in src
+
+
+def test_gears_adapter_checks_the_two_files_agree_on_the_conditions():
+    """Different condition sets would move the split without saying so, which is
+    exactly the kind of silent mismatch E3 and E4 were about."""
+    src = (ROOT / "src" / "maprna_p3" / "baseline_gears.py").read_text()
+    # the wording is wrapped across lines in the source, so match on the
+    # distinctive part rather than a whole sentence
+    assert "not shared" in src and "conditions VCPE splits on" in src

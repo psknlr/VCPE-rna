@@ -39,15 +39,97 @@ cannot return quietly.
 ## 1. Data you need to obtain
 
 Nothing is redistributed here — see [../data/README.md](../data/README.md) for
-sources and licences. Minimum for the response line:
+sources and licences. Two assets are needed for the response line, and **neither
+can simply be downloaded any more**, so both are now built by a script in this
+repository.
 
-| Asset | For |
-|---|---|
-| `adamson` / `norman` / `replogle_rpe1_essential` `perturb_processed.h5ad` | training and evaluation |
-| `Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt` | conditioning lookup |
+### 1.1 The conditioning table (build it; it is not an asset)
 
-Optional: scPerturb datasets (data-expansion track), STRING edges
-(`is_neighbor` feature), GENCODE transcript FASTA (RNA sequence axis).
+Every response number is conditioned on a `gene_symbol -> ESM2 vector` table.
+The table used before v4 existed only on the machine that produced the withdrawn
+results: it was never committed and there was no script to rebuild it, so no
+result was reproducible even in principle. Build it from public inputs:
+
+```bash
+# 1. human reviewed proteome with primary gene symbols (~20k entries, ~1 min)
+python - <<'EOF'
+import urllib.request, urllib.parse, gzip, re
+base, rows, hdr = "https://rest.uniprot.org/uniprotkb/search", [], None
+url = base + "?" + urllib.parse.urlencode(dict(
+    query="(organism_id:9606) AND (reviewed:true)", format="tsv",
+    fields="accession,gene_primary,sequence,length,protein_existence", size="500"))
+while url:
+    r = urllib.request.urlopen(urllib.request.Request(
+        url, headers={"Accept-Encoding": "gzip"}), timeout=180)
+    raw = r.read()
+    while raw[:2] == b"\x1f\x8b":        # sniff: a proxy may re-gzip
+        raw = gzip.decompress(raw)
+    lines = raw.decode().splitlines()
+    if hdr is None: hdr = lines[0]
+    rows += lines[1:]
+    m = re.search(r'<([^>]+)>;\s*rel="next"', r.headers.get("Link", ""))
+    url = m.group(1) if m else None
+open("uniprot_human_reviewed.tsv", "w").write("\n".join([hdr] + rows) + "\n")
+EOF
+
+# 2. embed them (resumable; writes shards, so an interruption costs minutes not hours)
+python tools/build_esm2_gene_table.py \
+  --uniprot_tsv uniprot_human_reviewed.tsv \
+  --out esm2_150M_human.pt \
+  --model facebook/esm2_t30_150M_UR50D --threads 4
+```
+
+**The ESM2 variant is part of the result, not a detail.** On 4 CPUs the 650M
+variant used before v4 needs roughly a day, 150M about 5–6 hours and 35M about
+90 minutes. The variant is written into the `.provenance.json` sidecar. It does
+not affect the *comparison* against the ESM2 retrieval and ridge controls — all
+three read the same table — but it does affect the absolute scores, so a score
+and its table must be quoted together. Note the direction of the bias if you
+economise here: the controls are pure functions of the embedding, while the model
+also sees the control profile and the dataset embedding, so a weaker table
+handicaps the controls more than the model.
+
+### 1.2 The Perturb-seq data
+
+GEARS' own `perturb_processed.h5ad` files are hosted on
+`dataverse.harvard.edu`, which some environments refuse outright (this one
+returns HTTP 403 for every path). The same experiments are on Zenodo in
+[scPerturb](https://doi.org/10.5281/zenodo.13350497), which packages them
+differently — raw counts, `obs['perturbation']`, no `condition` column — so they
+go through an adapter:
+
+```bash
+# CRISPRi screens, which is what the response head claims to predict
+for f in ReplogleWeissman2022_rpe1 TianKampmann2021_CRISPRi; do
+  curl -L -o $f.h5ad \
+    "https://zenodo.org/api/records/13350497/files/$f.h5ad/content"
+done
+
+# pseudobulk: what the P3 head predicts
+python src/maprna_p3/ingest_scperturb.py --h5ad ReplogleWeissman2022_rpe1.h5ad \
+  --out gears_fmt/replogle_rpe1.h5ad --min_cells 20 --n_ctrl 3000 --block 8192
+
+# cells: what GEARS and CPA need (see 2.4). Leave the cap off, or the cell file's
+# per-condition mean stops equalling the pseudobulk file and the panel diverges.
+python src/maprna_p3/ingest_scperturb.py --h5ad TianKampmann2021_CRISPRi.h5ad \
+  --out gears_fmt/tian2021_crispri_cells.h5ad --min_cells 20 --mode cells
+```
+
+Runs on the pseudobulk output must pass `--min_cells 1`: the cell-count gate
+already ran inside the adapter, and after aggregation every perturbation is one
+row, so the loader's own gate would otherwise drop everything.
+
+Two datasets scPerturb ships are **not** usable here and it is worth knowing why
+before reaching for them. `AdamsonWeissman2016_GSM2406681_10X010` has no
+`control` label at all — its `nperts` column reads 2 for single guides, and the
+only candidates are `nan` and `*` — and guessing which guide is the control
+would silently corrupt every fold change, so the adapter refuses. Any dataset
+with genuine multi-gene perturbations is also refused, because the separator
+differs per dataset and mislabelling a combination as a single gene is worse
+than not running.
+
+Optional: STRING edges (`is_neighbor` feature), GENCODE transcript FASTA (RNA
+sequence axis).
 
 For the efficacy line you additionally need ASO Atlas (patent-derived — read the
 licence note) and/or the OligoGym siRNA sets.
@@ -64,12 +146,14 @@ trains from scratch.
 
 ```bash
 python src/maprna_p3/train_p3.py \
-  --data_dirs data/adamson/perturb_processed.h5ad \
-              data/norman/perturb_processed.h5ad \
-              data/replogle_rpe1_essential/perturb_processed.h5ad \
-  --esm_table data/drive_weights/Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt \
-  --out_dir runs/p3_seed0 --epochs 60 --split_by target_gene
+  --data_dirs gears_fmt/replogle_rpe1.h5ad gears_fmt/tian2021_crispri.h5ad \
+  --esm_table esm2_150M_human.pt \
+  --out_dir runs/p3_seed0 --epochs 60 --split_by target_gene \
+  --min_cells 1 --n_hvg 2000
 ```
+
+(`--min_cells 1` because the ingest adapter already applied the cell-count gate;
+see 1.2. With GEARS' own `perturb_processed.h5ad` files, drop it.)
 
 `--split_by target_gene` is the default and holds out whole target genes. The
 alternative, `--split_by pert`, reproduces the historical split and prints a
@@ -137,6 +221,60 @@ Watch `ds_shuffle` in particular: if shuffling dataset identity collapses the
 metric, much of the score is dataset-level commonality rather than
 perturbation-specific biology — the same class of artefact as the P2
 shared-response shortcut.
+
+### 2.4b External baselines on the same footing
+
+The two external models are cell-level; the P3 head is a pseudobulk model. This
+is not a detail that can be papered over: GEARS' differential-expression step
+calls scanpy's `rank_genes_groups` per condition and **fails outright** on a
+pseudobulk file, because a group of one sample has no statistics. So each model
+gets the input it is published on, from the same cells, and everything that
+defines the comparison is taken from the file the P3 head reads:
+
+```bash
+python src/maprna_p3/baseline_gears.py \
+  --data_dirs gears_fmt/tian2021_crispri.h5ad          `# split, panel, target` \
+  --train_h5ad gears_fmt/tian2021_crispri_cells.h5ad   `# what GEARS trains on` \
+  --esm_table esm2_150M_human.pt \
+  --out_json runs/gears.json --n_hvg 2000 --min_cells 1 \
+  --split_by target_gene --hvg_from train --seed 0 --runs 5
+```
+
+The adapter refuses to run if the two files disagree about which conditions
+exist, because that would move the split without saying so. It also checks the
+cell file up front and tells you to build one if you passed pseudobulk, rather
+than dying inside scanpy with a ValueError that names every perturbation at once
+and reads like a data problem.
+
+Quote GEARS as a mean over `--runs` repetitions. A single GEARS run is noise:
+seven identical `--seed 0` invocations spanned `pearson_dev` −0.023 to +0.051
+(ERRATA E14a).
+
+CPA needs its own environment — it pins `torch<2.0.0` against this
+repository's `torch>=2.1`, and installing it in place turned 95 passing tests
+into 8 failures — so it runs in three stages with the interface on disk:
+
+```bash
+python src/maprna_p3/baseline_cpa.py export --work runs/cpa \
+  --data_dirs gears_fmt/tian2021_crispri.h5ad \
+  --train_h5ad gears_fmt/tian2021_crispri_cells.h5ad \
+  --esm_table esm2_150M_human.pt --n_hvg 2000 --min_cells 1 \
+  --split_by target_gene --hvg_from train
+python src/maprna_p3/baseline_cpa.py run   --work runs/cpa --prepare_venv
+python src/maprna_p3/baseline_cpa.py score --work runs/cpa --out_json runs/cpa.json
+```
+
+**`--hvg_from` and `--n_hvg` must match the P3 run exactly.** The panel is part
+of the protocol, not a detail: it decides which genes are scored. Every script
+that builds the comparison data exposes the same flags, and
+`tests/test_protocol_flags_agree.py` fails if a new one does not — a flag added
+to `train_p3.py` alone once left both external adapters unable to be told which
+panel they were supposed to share.
+
+Every report carries a `fairness` block naming what is **not** controlled:
+tuning effort, model capacity, each model's own preprocessing, and — when
+`--train_h5ad` is used — the deliberate difference in input granularity. Read it
+before quoting any number from it.
 
 ### 2.5 Stratified evaluation
 

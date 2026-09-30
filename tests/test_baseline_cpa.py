@@ -169,3 +169,63 @@ def test_score_marks_genes_cpa_does_not_cover(tmp_path):
     rep = json.loads(out.read_text())
     assert rep["cpa_coverage_fraction"] == pytest.approx(0.5)
     assert rep["intersected_mask_fraction"] == pytest.approx(0.5)
+
+
+def test_score_states_the_input_asymmetry_when_cpa_trained_on_cells(tmp_path):
+    """A cell-level CPA against a pseudobulk head is a deliberate asymmetry.
+
+    It is the right choice -- CPA models variation within a condition, so feeding it
+    one row per condition would be meaningless rather than fair -- but a reader
+    cannot check that unless the report says it happened.
+    """
+    n_pert, n_gene = 3, 20
+    syms = [f"G{i}" for i in range(n_gene)]
+    dev = np.arange(n_pert * n_gene, dtype=np.float32).reshape(n_pert, n_gene)
+    (tmp_path / "meta.json").write_text(json.dumps(dict(
+        h5ad="pb.h5ad", train_h5ad="cells.h5ad", train_h5ad_is_cell_level=True,
+        split_by="target_gene", seed=0, n_hvg=n_gene, hvg_symbols=syms,
+        train_conditions=[], valid_conditions=[],
+        test_conditions=[f"P{i}+ctrl" for i in range(n_pert)],
+        test_dataset_idx=[0] * n_pert)))
+    np.savez_compressed(tmp_path / "vcpe.npz", hvg_rows=np.arange(n_gene),
+                        dev_te=dev, mask_te=np.ones((n_pert, n_gene), bool),
+                        common_fc=np.zeros(n_gene, np.float32),
+                        ctrl_feat_rows=np.zeros(n_pert, int))
+    ctrl = np.full(n_gene, 7.0, dtype=np.float32)
+    np.savez_compressed(tmp_path / "cpa_pred.npz",
+                        pred_expr=(dev + ctrl).astype(np.float32), ctrl_mean=ctrl,
+                        gene_names=np.array(syms, dtype=object),
+                        n_cells_per_condition=np.full(n_pert, 6))
+    out = tmp_path / "rep.json"
+    p = subprocess.run([sys.executable, str(SCRIPT), "score", "--work", str(tmp_path),
+                        "--out_json", str(out)], capture_output=True, text=True,
+                       timeout=300)
+    assert p.returncode == 0, p.stdout + p.stderr
+    caveats = " ".join(json.loads(out.read_text())["fairness"]["not_controlled"])
+    assert "granularity" in caveats and "individual cells" in caveats
+
+
+def test_score_does_not_claim_a_cell_level_run_that_did_not_happen(tmp_path):
+    n_pert, n_gene = 3, 20
+    syms = [f"G{i}" for i in range(n_gene)]
+    dev = np.arange(n_pert * n_gene, dtype=np.float32).reshape(n_pert, n_gene)
+    (tmp_path / "meta.json").write_text(json.dumps(dict(
+        h5ad="pb.h5ad", split_by="target_gene", seed=0, n_hvg=n_gene,
+        hvg_symbols=syms, train_conditions=[], valid_conditions=[],
+        test_conditions=[f"P{i}+ctrl" for i in range(n_pert)],
+        test_dataset_idx=[0] * n_pert)))
+    np.savez_compressed(tmp_path / "vcpe.npz", hvg_rows=np.arange(n_gene),
+                        dev_te=dev, mask_te=np.ones((n_pert, n_gene), bool),
+                        common_fc=np.zeros(n_gene, np.float32),
+                        ctrl_feat_rows=np.zeros(n_pert, int))
+    ctrl = np.full(n_gene, 7.0, dtype=np.float32)
+    np.savez_compressed(tmp_path / "cpa_pred.npz",
+                        pred_expr=(dev + ctrl).astype(np.float32), ctrl_mean=ctrl,
+                        gene_names=np.array(syms, dtype=object),
+                        n_cells_per_condition=np.full(n_pert, 6))
+    out = tmp_path / "rep.json"
+    assert subprocess.run([sys.executable, str(SCRIPT), "score", "--work",
+                           str(tmp_path), "--out_json", str(out)],
+                          capture_output=True, text=True, timeout=300).returncode == 0
+    caveats = " ".join(json.loads(out.read_text())["fairness"]["not_controlled"])
+    assert "granularity" not in caveats

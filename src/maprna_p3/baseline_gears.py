@@ -145,6 +145,29 @@ def parse_args():
                    choices=["target_gene", "pert"],
                    help="MUST match the VCPE run being compared against")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--train_max_genes", type=int, default=5000,
+                   help="subset GEARS's training matrix to this many genes (0 = all). "
+                        "GEARS builds one PyG object per cell over every gene, so a "
+                        "33k-gene cell-level file exhausts a 15 GB host; it is also "
+                        "not GEARS's own regime, which is about 5000 highly variable "
+                        "genes. The genes VCPE scores are ALWAYS kept, whatever their "
+                        "variance, so coverage of the panel stays complete and the "
+                        "subsetting cannot quietly remove the genes being compared. "
+                        "Reducing genes is preferred over reducing cells: fewer cells "
+                        "would handicap GEARS, and a comparison that handicaps the "
+                        "external baseline is worthless.")
+    p.add_argument("--train_h5ad", default=None,
+                   help="cell-level h5ad GEARS trains on. Default: the same file as "
+                        "--data_dirs. GEARS is a cell-level model -- its own "
+                        "differential-expression step calls scanpy's "
+                        "rank_genes_groups per condition, which fails outright on a "
+                        "pseudobulk file because a group of one sample has no "
+                        "statistics. Pointing it at a cells export (ingest_scperturb "
+                        "--mode cells) lets GEARS train the way it is published, "
+                        "while the split, the gene panel and the scored quantity all "
+                        "still come from the file VCPE reads. That asymmetry is "
+                        "deliberate and is stated in the fairness block: handicapping "
+                        "the external baseline would make the comparison worthless.")
     p.add_argument("--min_cells", type=int, default=3)
     p.add_argument("--knn_k", type=int, default=10)
     p.add_argument("--epochs", type=int, default=20)
@@ -219,12 +242,69 @@ def main():
     import anndata as ad
     from gears import GEARS, PertData
 
-    adata = ad.read_h5ad(args.data_dirs[0])
+    train_h5ad = args.train_h5ad or args.data_dirs[0]
+    adata = ad.read_h5ad(train_h5ad)
     if "gene_name" in adata.var.columns:          # GEARS keys on var_names
         adata.var_names = adata.var["gene_name"].astype(str)
         adata.var_names_make_unique()
     if "cell_type" not in adata.obs.columns:
         adata.obs["cell_type"] = "cells"           # PertData requires the column
+
+    # GEARS's differential-expression step needs more than one cell per condition.
+    # Without this check it dies inside scanpy with a ValueError naming every
+    # perturbation at once, which reads like a data problem rather than the wrong
+    # input granularity.
+    if args.train_max_genes and adata.n_vars > args.train_max_genes:
+        import scipy.sparse as _sp
+        panel = {s_ for s_ in panel_symbols if s_}
+        names = np.asarray([str(v) for v in adata.var_names])
+        must = np.isin(names, list(panel))
+        X_ = adata.X
+        # variance without densifying: E[x^2] - E[x]^2
+        if _sp.issparse(X_):
+            m1 = np.asarray(X_.mean(axis=0)).ravel()
+            m2 = np.asarray(X_.multiply(X_).mean(axis=0)).ravel()
+        else:
+            m1 = np.asarray(X_).mean(axis=0)
+            m2 = (np.asarray(X_) ** 2).mean(axis=0)
+        var = np.maximum(m2 - m1 ** 2, 0.0)
+        var[must] = np.inf                      # the scored panel is never dropped
+        keep = np.sort(np.argsort(-var)[:max(args.train_max_genes, int(must.sum()))])
+        kept_panel = int(np.isin(names[keep], list(panel)).sum())
+        print(f"[gears] training matrix subset to {len(keep)}/{adata.n_vars} genes "
+              f"({kept_panel}/{len(panel)} panel genes kept, all of them by "
+              f"construction)", flush=True)
+        assert kept_panel == len(panel & set(names)), "a scored gene was dropped"
+        adata = adata[:, keep].copy()
+
+    n_per_cond = adata.obs["condition"].astype(str).value_counts()
+    thin = n_per_cond[n_per_cond < 2]
+    if len(thin):
+        raise SystemExit(
+            f"{train_h5ad}: {len(thin)} of {len(n_per_cond)} conditions have a "
+            "single row, so GEARS's rank_genes_groups step has no statistics to "
+            "compute and fails. This is what a pseudobulk export looks like to "
+            "GEARS. Build a cell-level file with\n"
+            "  python src/maprna_p3/ingest_scperturb.py --mode cells ...\n"
+            "and pass it as --train_h5ad, keeping --data_dirs on the pseudobulk "
+            "file so the split, panel and scored quantity stay identical to the "
+            "VCPE run.")
+
+    # the comparison is only on the same split if both files hold the same
+    # conditions; a mismatch would silently move the split
+    vcpe_conds = {c for _, c in train_items + val_items + test_items}
+    train_conds = set(n_per_cond.index) - {"ctrl"}
+    missing = sorted(vcpe_conds - train_conds)
+    if missing:
+        raise SystemExit(
+            f"{train_h5ad} is missing {len(missing)} of the {len(vcpe_conds)} "
+            f"conditions VCPE splits on, e.g. {missing[:5]}. The two files must "
+            "come from the same source and the same --min_cells, or the split is "
+            "not shared.")
+    extra = sorted(train_conds - vcpe_conds)
+    if extra:
+        print(f"[gears] note: {len(extra)} conditions in the training file are not "
+              f"in VCPE's item set and are unused, e.g. {extra[:3]}", flush=True)
 
     pert_data = PertData(work)
     pert_data.new_data_process(dataset_name="vcpe_cmp", adata=adata)
@@ -330,6 +410,10 @@ def main():
     )
     report = dict(
         n_test_conditions=int(len(test_items)),
+        train_h5ad=os.path.abspath(train_h5ad),
+        train_h5ad_is_cell_level=bool(args.train_h5ad),
+        train_n_genes=int(adata.n_vars),
+        train_n_cells=int(adata.n_obs),
         n_skipped_not_in_pert_graph=len(skipped),
         skipped=[c for c, _ in skipped],
         vcpe_measured_fraction=float(data["mask_te"].mean()),
@@ -348,7 +432,19 @@ def main():
             "scipy, and which was used belongs next to this number.",
             "GEARS does not reproduce its own result at a fixed seed, so its number "
             "here is a mean over --runs repetitions with the spread reported.",
-        ]),
+        ] + ([
+            "Input granularity differs on purpose. GEARS trained on individual "
+            f"cells ({os.path.basename(train_h5ad)}) while the P3 head trains on "
+            "the pseudobulk mean of the same cells; the split, the gene panel, the "
+            "predicted quantity and the metric are identical. GEARS cannot run on "
+            "pseudobulk at all -- its differential-expression step has no "
+            "statistics for a group of one -- so the alternative was not a fairer "
+            "comparison but no comparison.",
+        ] if args.train_h5ad else [
+            "GEARS was given the same pseudobulk file as the P3 head rather than "
+            "the cell-level input it is published on, which is not the regime it "
+            "was designed for.",
+        ])),
     )
 
     print(f"\n=== GEARS on VCPE's split, panel and metrics "

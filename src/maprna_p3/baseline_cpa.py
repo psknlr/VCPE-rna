@@ -254,8 +254,25 @@ def stage_export(args):
         common_fc=data["common_fc"],
         ctrl_feat_rows=np.asarray([di for di, _ in te]),
     )
+    train_h5ad = args.train_h5ad or args.data_dirs[0]
+    if args.train_h5ad:
+        # the comparison is only on the same split if both files hold the same
+        # conditions, so this is checked here rather than in the other environment
+        import anndata as ad_
+        a_ = ad_.read_h5ad(train_h5ad, backed="r")
+        have = set(a_.obs["condition"].astype(str)) - {"ctrl"}
+        want = {c for _, c in tr + va + te if c.lower() != "ctrl"}
+        miss = sorted(want - have)
+        del a_
+        if miss:
+            raise SystemExit(
+                f"{train_h5ad} is missing {len(miss)} of the {len(want)} conditions "
+                f"the split covers, e.g. {miss[:5]}. Both files must come from the "
+                "same source and the same --min_cells, or the split is not shared.")
     meta = dict(
         h5ad=os.path.abspath(args.data_dirs[0]),
+        train_h5ad=os.path.abspath(train_h5ad),
+        train_h5ad_is_cell_level=bool(args.train_h5ad),
         split_by=args.split_by, seed=args.seed, n_hvg=args.n_hvg,
         hvg_symbols=syms,
         train_conditions=sorted({c for _, c in tr if c.lower() != "ctrl"}),
@@ -282,10 +299,19 @@ def stage_run(args):
 
     with open(os.path.join(args.work, "meta.json")) as f:
         meta = json.load(f)
-    adata = ad.read_h5ad(meta["h5ad"])
+    adata = ad.read_h5ad(meta.get("train_h5ad", meta["h5ad"]))
     if "gene_name" in adata.var.columns:
         adata.var_names = adata.var["gene_name"].astype(str)
         adata.var_names_make_unique()
+    # CPA is a latent-variable model over cells; one pseudobulk row per condition
+    # leaves it nothing to model within a condition. Say so here rather than let it
+    # train on 1-sample groups and quietly report a number.
+    npc = adata.obs["condition"].astype(str).value_counts()
+    if (npc < 2).any() and not meta.get("train_h5ad_is_cell_level"):
+        print(f"[cpa] WARNING: {int((npc < 2).sum())} of {len(npc)} conditions have "
+              "a single row. CPA is a cell-level model and this is what a pseudobulk "
+              "export looks like to it; build a cell file with ingest_scperturb "
+              "--mode cells and re-export with --train_h5ad.", flush=True)
 
     # CPA reads the split from an obs column, so VCPE's split goes in verbatim
     # rather than being approximated by one of CPA's own splitters.
@@ -427,7 +453,13 @@ def stage_score(args):
             "torch<2.0.0 while this repository requires torch>=2.1. Installing it "
             "alongside VCPE downgrades torch and breaks the model code. Record "
             "both environments next to this number."),
-        fairness=fairness_block(),
+        fairness=fairness_block(extra=([
+            "Input granularity differs on purpose: CPA trained on individual cells "
+            "while the P3 head trains on the pseudobulk mean of the same cells. The "
+            "split, panel, predicted quantity and metric are identical. CPA models "
+            "variation within a condition, so a pseudobulk input would not be a "
+            "fairer comparison, only a meaningless one.",
+        ] if meta.get("train_h5ad_is_cell_level") else [])),
     )
     c = rep["cpa"]
     print("\n=== CPA on VCPE's split, panel, target and metrics ===", flush=True)
@@ -462,6 +494,14 @@ def main():
     # export
     p.add_argument("--data_dirs", nargs="+", default=[])
     p.add_argument("--esm_table", default="")
+    p.add_argument("--train_h5ad", default=None,
+                   help="cell-level h5ad CPA trains on. Default: the same file as "
+                        "--data_dirs. CPA is a latent-variable model over cells, so "
+                        "one pseudobulk row per condition leaves it nothing to model "
+                        "within a condition. The split, the gene panel and the scored "
+                        "quantity still come from --data_dirs, the file VCPE reads; "
+                        "only the training input differs, and the fairness block says "
+                        "so.")
     p.add_argument("--n_hvg", type=int, default=2000)
     p.add_argument("--hvg_from", choices=("train", "all"), default="train",
                    help="which perturbations the response panel is ranked on. Must "
