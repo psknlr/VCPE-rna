@@ -37,7 +37,7 @@ from baselines import run_all  # noqa: E402
 from eval_metrics import (  # noqa: E402
     per_item_correlation, pooled_correlation, top_k_overlap)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from provenance import write_json  # noqa: E402
+from provenance import stamp, write_json  # noqa: E402
 
 
 def parse_args():
@@ -504,6 +504,30 @@ def main():
               if model.proj_r is not None else None)
 
     log_path = os.path.join(args.out_dir, "train_log.jsonl")
+    # The log is append-only, so a re-run into an existing out_dir concatenates two
+    # runs whose epoch numbers both start at 1 -- which is what happened when a
+    # killed 80-epoch run was resumed and left a log reading 1..74 then 1..80,
+    # unsplittable by anything reading it. ERRATA cites train_log.jsonl as
+    # evidence, so an ambiguous boundary is an E11-class traceability problem
+    # rather than cosmetic. History is kept; the boundary is made explicit and
+    # machine-readable instead. Consumers should take the records after the LAST
+    # run_start.
+    n_prior = 0
+    if os.path.exists(log_path):
+        with open(log_path) as f:
+            n_prior = sum(1 for _ in f)
+    with open(log_path, "a") as f:
+        f.write(json.dumps(dict(
+            run_start=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            prior_records_in_this_file=n_prior,
+            epochs_planned=args.epochs,
+            note="records after this line belong to one run; epoch numbering "
+                 "restarts here",
+            provenance=stamp(args=args))) + "\n")
+    if n_prior:
+        print(f"[log] {log_path} already held {n_prior} records from an earlier "
+              f"run; a run_start boundary was written so the two cannot be "
+              f"confused", flush=True)
     best_pd, best_epoch = -float('inf'), -1
     ckpt_path = os.path.join(args.out_dir, 'ckpt_p3_best_dev.pt')
     n = len(rows_tr)

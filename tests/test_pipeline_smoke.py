@@ -301,3 +301,35 @@ def test_ablation_quotes_the_shuffle_floor_not_the_zeroed_one(synth, trained):
                - (interp["intact_pearson_dev"]
                   - interp["no_conditioning_floor_shuffled"])) < 1e-9
     assert "upper bound" in interp["note"] or "upper bound" in log
+
+
+def test_a_rerun_marks_the_log_boundary_instead_of_silently_concatenating(synth):
+    """Found while resuming a killed run: train_log.jsonl is append-only, so a
+    re-run into an existing out_dir left a log reading epochs 1..74 then 1..80
+    with nothing to split on. ERRATA cites this file as evidence, so an ambiguous
+    boundary is a traceability problem, not a cosmetic one.
+    """
+    out = synth / "rerun_boundary"
+    common = ["src/maprna_p3/train_p3.py",
+              "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+              "--esm_table", str(synth / "esm.pt"), "--out_dir", str(out),
+              "--n_hvg", "40", "--batch_size", "8", "--split_by", "target_gene"]
+    _run(common + ["--epochs", "2"])
+    log = out / "train_log.jsonl"
+    first = [json.loads(l) for l in log.read_text().splitlines()]
+    starts = [r for r in first if "run_start" in r]
+    assert len(starts) == 1, "the first run must open with a boundary record"
+    assert starts[0]["prior_records_in_this_file"] == 0
+    assert "provenance" in starts[0], "the boundary must carry the run's provenance"
+
+    log_second = _run(common + ["--epochs", "2"])
+    recs = [json.loads(l) for l in log.read_text().splitlines()]
+    starts = [i for i, r in enumerate(recs) if "run_start" in r]
+    assert len(starts) == 2, "the second run must add its own boundary"
+    assert recs[starts[1]]["prior_records_in_this_file"] > 0
+    assert "already held" in log_second, "the re-run must say the file was not empty"
+
+    # the last run's records are unambiguously recoverable
+    tail = [r for r in recs[starts[1] + 1:] if "epoch" in r]
+    assert [r["epoch"] for r in tail] == [1, 2], \
+        "records after the last boundary must be exactly the latest run's epochs"
