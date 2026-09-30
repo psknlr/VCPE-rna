@@ -394,16 +394,37 @@ A number that fails any of these is not ready, regardless of its value.
 
 These are open and listed in ERRATA.md's Outstanding section:
 
-* **No external model has been run.** GEARS, scGPT, CPA, AIDO.RNA-Pert, OligoAI,
-  ASOptimizer, OligoWalk and RNAGenesis exist in this repository only as
-  hard-coded comparator strings quoted from their papers, under different splits
-  and preprocessing. The cheap controls are implemented; the published models are
-  not. This is the single largest gap.
-* **No number has been regenerated** under the corrected protocol. The code is
-  fixed; the results are not.
-* **The size of the masking effect (ERRATA E6) is unquantified** on real data.
-  The harness is a flag: run the same configuration twice, once with `--no_mask`,
-  and compare. Watch the `train_mean` baseline as well as the model — it carries
-  no perturbation information, so any gain it shows when unmasked is pure
-  artefact. On synthetic data unmasking lifted it from −0.08 to +0.11.
+* **Two external models run; the rest do not.** GEARS and CPA now run on this
+  repository's split, panel, residual target and estimator (§2.4b), alongside the
+  cheap controls. scGPT, AIDO.RNA-Pert, OligoAI, ASOptimizer, OligoWalk and
+  RNAGenesis still exist here only as hard-coded comparator strings quoted from
+  their papers, under different splits and preprocessing, and **should not be
+  read as a comparison**. Of the models that do run, the ones hardest to beat are
+  not the published ones: they are `knn_esm2` and `ridge_esm2`, retrieval and a
+  linear map over the same embeddings the head is conditioned on.
+* **The withdrawn figures are not "regenerated", and cannot be.** They were
+  measured on `adamson` / `norman` / `replogle_rpe1_essential` from a host this
+  environment cannot reach, under a protocol whose defects are the reason they
+  were withdrawn. What exists now is a *fresh* measurement on two reachable
+  CRISPRi screens under the corrected protocol. It is not the same experiment
+  with the bugs removed, and presenting it as though a withdrawn figure had been
+  "confirmed" or "corrected" to a new value would be its own misrepresentation.
+  Quote it as what it is: a different dataset pair, measured properly.
+* **The gene panel size used for the real runs is a compute concession.** The
+  claimed configuration is `--n_hvg 2000`; at that width one epoch on 2026
+  perturbations costs about 90 seconds on 4 CPUs, so three seeds of 30 epochs is
+  over two hours before any baseline runs. The multi-seed table is therefore run
+  at a narrower panel with a single-seed `--n_hvg 2000` run beside it to show the
+  ordering is not an artefact of the panel width. If the two disagree, the
+  narrower table is the one to discard.
+* **The size of the masking effect (ERRATA E6) is bounded by the data available,
+  not by the flag.** The harness is a flag: run the same configuration twice, once
+  with `--no_mask`, and compare — watching the `train_mean` baseline as well as
+  the model, since it carries no perturbation information and any gain it shows
+  when unmasked is pure artefact (on synthetic data unmasking lifted it from
+  −0.08 to +0.11). But the effect scales with the *unmeasured* fraction of the
+  panel, and the two reachable CRISPRi screens overlap so heavily that the
+  measured fraction is 0.987. A small difference on this pair therefore says
+  nothing about the magnitude in the withdrawn runs, which combined a genome-wide
+  screen with a ~5k-gene panel. Do not quote the one as an estimate of the other.
 * **The L2 RNA-encoder track has no results**, only a launch command.
