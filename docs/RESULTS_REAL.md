@@ -363,12 +363,45 @@ seed finished. Resuming after an infrastructure failure is not a budget change, 
 it was restarted unchanged, and it died again.
 
 What is reported instead is a **single-seed convergence probe** at 150 epochs,
-labelled as such. It answers the one question left open -- whether
-inner-validation selection picks an epoch well before the budget ends, i.e.
-whether the head converges at all -- and it is explicitly **not** the declared
-three-seed paired comparison. The paired head-vs-ridge verdict therefore stands
-where it was measured at 80 epochs: **a tie**, -0.0024, CI [-0.0308, +0.0260]. No
-claim here rests on the probe. Note also what "more epochs" means here: ridge is a
+labelled as such. It is explicitly **not** the declared three-seed paired
+comparison. It answered its question, and then turned up something more useful
+than its own result.
+
+**The answer: the head does not converge, even at 5x the original budget.** On
+seed 0, inner-validation selection picks epoch **150 of 150** -- still improving
+when the run ends -- along the trajectory +0.2944 (30 ep) -> +0.3361 (80 ep) ->
++0.3497 (150 ep).
+
+**And the trap the probe fell into, which matters more.** That +0.3497 sits
+against ridge's +0.3096 on the same split: a +0.040 margin, and it would be easy
+to present as evidence that the head beats ridge given enough compute. It is not,
+because of what the per-seed breakdown of the 80-epoch run shows:
+
+| seed | head (80 ep) | ridge | diff |
+|---|---|---|---|
+| **0** | +0.3361 | **+0.3096** | **+0.0265** (head wins) |
+| 1 | +0.3341 | +0.3529 | -0.0188 |
+| 2 | +0.3336 | +0.3485 | -0.0149 |
+| mean | +0.3346 | +0.3370 | **-0.0024** |
+
+Ridge scores +0.3096, +0.3529, +0.3485 across the three splits. **Seed 0 is
+ridge's worst split by 0.039, and the only one of three where the head leads at
+all.** The probe therefore measured the head's best case and nothing else: it
+shows that more compute widens a lead which already existed *on that split*, not
+that the head beats ridge. Seed 0 was chosen because it is the default, not
+because it looked favourable -- which makes the bias easier to miss, not less
+real, and it is only visible because the per-seed values were checked rather than
+the mean alone.
+
+So the paired verdict stands exactly where it was measured, at 80 epochs across
+three splits: **a tie**, -0.0024, CI [-0.0308, +0.0260], head winning 1 of 3. What
+would settle it is 150 epochs x 3 seeds, which this container could not sustain.
+No claim in this document rests on the probe.
+
+One correctness check worth recording from the same run: `ridge_esm2` on seed 0
+reads **+0.3096 to the last digit in all three runs** (30, 80 and 150 epochs;
+spread 0.00e+00), confirming the closed-form baseline is deterministic given the
+split and the table, as it must be. Note also what "more epochs" means here: ridge is a
 closed-form solve with no budget at all, so every epoch given to the head widens
 an asymmetry already recorded in the fairness block. A head that needs 5x the
 compute to match a linear solve has not made an efficiency case either.
