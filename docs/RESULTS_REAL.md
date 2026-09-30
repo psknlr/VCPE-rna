@@ -280,6 +280,55 @@ repeats the error of crediting extra input to architecture.
 
 I expected this channel to help and said so before running it. It did not.
 
+## Graph-augmented embeddings: the biggest gain so far, and it goes to the baseline
+
+The redesign the previous section pointed to: fold the STRING neighbourhood into
+the embedding itself, `[own || mean(partners)]`, 640-d -> 1280-d, with the
+neighbourhood block norm-matched and zeroed for the 4605 isolated genes. It is a
+**table**, not a model change, so the head, `ridge_esm2` and `knn_esm2` all read
+identical features. Same 3 seeds, same split, same panel, 30 epochs:
+
+| | plain 640-d | graph 1280-d | delta |
+|---|---|---|---|
+| P3 head | +0.2927 +/- 0.0055 | +0.3291 +/- 0.0309 | **+0.0364** |
+| **ridge_esm2** | +0.2653 | **+0.3370** | **+0.0717** |
+| knn_esm2 | +0.2115 | +0.2637 | +0.0523 |
+| train_mean | +0.0121 | +0.0121 | 0.0000 |
+
+**The network information is real and substantial.** Everything that reads the
+embedding improves, `train_mean` (which does not read it) is unchanged to four
+decimals as it must be, and **+0.337 is the best number this project has
+produced** -- +0.044 above anything previously measured. The hypothesis from the
+last section was right: the sparse indicator was the wrong injection point, and
+the dense one works.
+
+**And it dissolves the architecture's case.** Ridge gains twice what the head does
+(+0.072 vs +0.036), so the head's advantage is erased and slightly reversed:
+
+| on the graph table | paired diff | CI95 | verdict |
+|---|---|---|---|
+| head vs ridge_esm2 | **-0.0079** | [-0.0169, +0.0012] | mixed, model wins 1/3 seeds |
+| head vs knn_esm2 | +0.0654 | [+0.0378, +0.0929] | beats, every seed |
+
+For reference, on the plain table the head beat ridge +0.0274, CI [+0.010,
++0.045], every seed. So the head's edge over a linear map existed only while the
+features were **impoverished**: its non-linearity was substituting for
+information the representation lacked, and once that information is present in a
+form a linear model can use, the linear model uses it better.
+
+There is no leakage here to explain it away -- the augmented table is built from
+the ESM2 vectors and the STRING graph alone, neither of which touches the
+Perturb-seq expression data or the test labels, and the panel is still ranked on
+training items only.
+
+**One caveat that runs in the head's favour, and is being tested rather than
+asserted.** The head's hyperparameters were chosen against the 640-d table, and
+its seed-to-seed sd tripled on the 1280-d one (0.0055 -> 0.0309), which is what
+an undertrained model in a doubled feature space looks like. Ridge is closed-form
+and has no equivalent knob, so a longer head run is a test biased *towards* the
+head. That run is reported below; the claim here is what was measured at matched
+settings, not that the architecture is inherently worse.
+
 ## A scale check that matters for how Table A is read
 
 Table A trains on both screens together. Table D repeats the head on the **Tian

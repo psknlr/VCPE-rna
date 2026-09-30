@@ -31,16 +31,25 @@ response direction and magnitude — a commercially usable replacement for Non-C
 > **[docs/ERRATA.md](docs/ERRATA.md)**; how to regenerate the numbers under the
 > corrected protocol is in **[docs/REPRODUCE.md](docs/REPRODUCE.md)**. The code in `src/` is fixed.
 >
-> **The first corrected measurement on real data is now in
-> [docs/RESULTS_REAL.md](docs/RESULTS_REAL.md).** On two real CRISPRi screens,
-> under a held-out-gene split, the model clears the trivial baselines
-> decisively, and its edge over a ridge regression on the *same* ESM2 embeddings
-> is **embedding-dependent**: a tie on ESM2-35M (paired CI [-0.016, +0.026]), a
-> small but consistent win on ESM2-150M (+0.027, paired CI [+0.010, +0.045],
-> every seed). It is a modest advantage over a linear baseline, not the large
-> margin earlier tags claimed, and a fresh measurement on reachable datasets --
-> not a regeneration of the withdrawn figures. Please do not cite figures from
-> earlier tags.
+> **The first corrected measurements on real data are in
+> [docs/RESULTS_REAL.md](docs/RESULTS_REAL.md)**, on two real CRISPRi screens
+> under a held-out-gene split. Two findings matter more than any single number:
+>
+> * **Best result: +0.337, from a closed-form ridge regression** over
+>   STRING-graph-augmented ESM2 embeddings -- not from the conditioned head.
+>   Folding a gene's interaction neighbourhood into its embedding lifts
+>   everything that reads the embedding (ridge +0.072, head +0.036, k-NN +0.052)
+>   and is the largest gain measured here.
+> * **The head's edge over a linear map survived only while the features were
+>   impoverished.** On plain ESM2-150M it beat ridge by +0.027 (CI [+0.010,
+>   +0.045], every seed); on the richer graph-augmented features, identical for
+>   all methods, that becomes **-0.008** (CI [-0.017, +0.001], 1/3 seeds).
+>
+> The head does clear the trivial baselines decisively, and its conditioning is
+> real (permuting target-gene identity costs -0.172 of +0.288). But the case for
+> the architecture over a ridge fit on the same features is **not established**.
+> These are fresh measurements on reachable datasets, not a regeneration of the
+> withdrawn figures. Please do not cite figures from earlier tags.
 >
 > What survives unchanged: the P2 shared-response finding (strengthened — the
 > same failure mode recurred twice more in our own pipeline), and the three
