@@ -321,13 +321,44 @@ the ESM2 vectors and the STRING graph alone, neither of which touches the
 Perturb-seq expression data or the test labels, and the panel is still ranked on
 training items only.
 
-**One caveat that runs in the head's favour, and is being tested rather than
-asserted.** The head's hyperparameters were chosen against the 640-d table, and
-its seed-to-seed sd tripled on the 1280-d one (0.0055 -> 0.0309), which is what
-an undertrained model in a doubled feature space looks like. Ridge is closed-form
-and has no equivalent knob, so a longer head run is a test biased *towards* the
-head. That run is reported below; the claim here is what was measured at matched
-settings, not that the architecture is inherently worse.
+### The caveat was real: the head was undertrained, and the loss was mostly that
+
+The head's hyperparameters were chosen against the 640-d table, and its
+seed-to-seed sd tripled on the 1280-d one (0.0055 -> 0.0309) -- what an
+undertrained model in a doubled feature space looks like. Ridge is closed-form
+with no equivalent knob, so a longer head run is a test biased *towards* the head.
+Run at 80 epochs instead of 30, same 3 seeds:
+
+| head on graph features | pearson_dev | sd | epoch selected (of budget) |
+|---|---|---|---|
+| 30 epochs | +0.3291 | 0.0309 | 28, 26, 26 of 30 |
+| 80 epochs | **+0.3346** | **0.0014** | 78, 77, 78 of 80 |
+| ridge_esm2 (closed form) | +0.3370 | — | n/a |
+
+| head(80ep) vs | paired diff | CI95 | verdict |
+|---|---|---|---|
+| ridge_esm2 | **-0.0024** | [-0.0308, +0.0260] | mixed, 1/3 seeds |
+| knn_esm2 | +0.0709 | [+0.0387, +0.1031] | beats, every seed |
+
+So the -0.0079 "ridge wins" at 30 epochs was largely a training-budget artefact.
+At 80 epochs the head is level with ridge (-0.0024, CI straddling zero widely) and
+its variance has collapsed by 20x. **The honest verdict on the graph features is a
+tie, not a loss.**
+
+**But the head has not converged, and that has to be said rather than left for a
+reader to notice.** Inner-validation selection picks epochs 78, 77 and 78 out of
+80 -- the model is still improving when the budget ends. Its trajectory is +0.3291
+at 30 epochs, +0.3346 at 80, still climbing. So this comparison does **not**
+establish that the head cannot beat ridge; it establishes that it has not yet,
+within a budget it is still exhausting.
+
+That invites an obvious abuse: extend the budget until the favoured model wins,
+then stop. To avoid it, the follow-up budget was **declared before running and run
+once** -- 150 epochs, 3 seeds -- and whatever it produced is reported below
+without a further extension. Note also what "more epochs" means here: ridge is a
+closed-form solve with no budget at all, so every epoch given to the head widens
+an asymmetry already recorded in the fairness block. A head that needs 5x the
+compute to match a linear solve has not made an efficiency case either.
 
 ## A scale check that matters for how Table A is read
 
