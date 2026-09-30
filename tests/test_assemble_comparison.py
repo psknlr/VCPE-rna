@@ -22,7 +22,8 @@ def prov(**args):
 
 def seeds_report(path, value, seeds=(0, 1, 2), **over):
     a = dict(data_dirs=["/d/a.h5ad"], n_hvg=2000, hvg_from="train",
-             split_by="target_gene", test_frac=0.15, min_cells=1, seeds=list(seeds))
+             split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
+             seeds=list(seeds))
     a.update(over)
     rep = dict(model=dict(mean=value, n=len(seeds), sd=0.01, min=value - .01,
                          max=value + .01),
@@ -38,7 +39,8 @@ def seeds_report(path, value, seeds=(0, 1, 2), **over):
 
 def gears_report(path, value, **over):
     a = dict(data_dirs=["/d/a.h5ad"], n_hvg=2000, hvg_from="train",
-             split_by="target_gene", test_frac=0.15, min_cells=1, seed=0)
+             split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
+             seed=0)
     a.update(over)
     rep = dict(gears=dict(pearson_dev=value), gears_across_runs=dict(n_runs=5, sd=.03,
                                                                     min=.01, max=.12),
@@ -84,7 +86,8 @@ def test_it_refuses_rows_whose_seed_differs_because_the_split_depends_on_it(tmp_
 def test_it_refuses_two_different_estimators_in_one_table(tmp_path):
     """E4, machine-checked."""
     a = dict(data_dirs=["/d/a.h5ad"], n_hvg=2000, hvg_from="train",
-             split_by="target_gene", test_frac=0.15, min_cells=1, seed=0)
+             split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
+             seed=0)
     (tmp_path / "a.json").write_text(json.dumps(dict(
         gears=dict(pearson_dev=0.1, pearson_dev_estimator="pooled"), **prov(**a))))
     (tmp_path / "b.json").write_text(json.dumps(dict(
@@ -165,3 +168,25 @@ def test_the_paired_column_reads_the_key_run_seeds_actually_writes(tmp_path):
     assert knn["paired_diff"] is not None, "the paired difference was dropped"
     assert abs(knn["paired_diff"] - (0.05 - 0.20)) < 1e-9
     assert "n/a" not in out.with_suffix(".md").read_text().split("Paired")[1]
+
+
+def test_it_refuses_a_row_that_does_not_say_whether_it_masked(tmp_path):
+    """Masked and unmasked scoring are different measurements -- ERRATA E6 -- so a
+    report that does not record which it did cannot share a table with one that
+    does. The unmasked configuration scores a constant block that carries no
+    perturbation information, which is exactly what makes the two incomparable."""
+    gears_report(tmp_path / "g.json", 0.15)
+    rep = json.loads((tmp_path / "g.json").read_text())
+    del rep["provenance"]["args"]["use_mask"]
+    (tmp_path / "g.json").write_text(json.dumps(rep))
+    p = run("--reports", str(tmp_path / "g.json"), "--out_json", str(tmp_path / "o.json"))
+    assert p.returncode != 0
+    assert "use_mask" in (p.stdout + p.stderr) and "E6" in (p.stdout + p.stderr)
+
+
+def test_it_refuses_to_put_a_masked_and_an_unmasked_row_in_one_table(tmp_path):
+    seeds_report(tmp_path / "s.json", 0.05, seeds=(0,))
+    gears_report(tmp_path / "g.json", 0.15, use_mask=False)
+    p = run("--reports", str(tmp_path / "s.json"), str(tmp_path / "g.json"),
+            "--out_json", str(tmp_path / "o.json"))
+    assert p.returncode == 2 and "use_mask" in p.stderr

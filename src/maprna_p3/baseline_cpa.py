@@ -272,6 +272,15 @@ def stage_export(args):
     meta = dict(
         h5ad=os.path.abspath(args.data_dirs[0]),
         train_h5ad=os.path.abspath(train_h5ad),
+        use_mask=True,  # scored through the intersected measured mask, unconditionally
+        # One canonical protocol statement, carried across the environment
+        # boundary. The score stage runs with its own argv (--work, --out_json),
+        # so its provenance cannot describe the experiment; without this a reader
+        # -- and the assembler -- could not tell which panel or split produced it.
+        protocol=dict(data_dirs=[os.path.abspath(d) for d in args.data_dirs],
+                      n_hvg=args.n_hvg, hvg_from=getattr(args, "hvg_from", "train"),
+                      split_by=args.split_by, test_frac=args.test_frac,
+                      min_cells=args.min_cells, seed=args.seed, use_mask=True),
         train_h5ad_is_cell_level=bool(args.train_h5ad),
         split_by=args.split_by, seed=args.seed, n_hvg=args.n_hvg,
         hvg_symbols=syms,
@@ -446,6 +455,7 @@ def stage_score(args):
         cpa_coverage_fraction=float(np.mean(coverage)),
         intersected_mask_fraction=float(np.mean(mask)),
         cpa=score(v["dev_te"], pred_dev, mask, seed=meta["seed"]),
+        protocol=meta.get("protocol", {}),
         config=dict(split_by=meta["split_by"], seed=meta["seed"],
                     n_hvg=meta["n_hvg"]),
         environment_note=(

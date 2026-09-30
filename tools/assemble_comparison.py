@@ -30,7 +30,7 @@ from provenance import write_json  # noqa: E402
 # Fields that decide WHAT is being measured. Two rows that differ on any of these
 # are not comparable, whatever their numbers look like.
 REQUIRED_SAME = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
-                 "min_cells", "seed")
+                 "min_cells", "seed", "use_mask")
 
 # Fields worth showing but which legitimately differ between models.
 INFORMATIVE = ("epochs", "train_h5ad", "train_h5ad_is_cell_level", "device")
@@ -58,7 +58,8 @@ def parse_args():
 # one-element list -- run_seeds used to summarise split_by as the SET of values
 # across its seeds -- and comparing a list against the same value unwrapped would
 # report a mismatch that does not exist.
-SCALAR = ("n_hvg", "hvg_from", "split_by", "test_frac", "min_cells", "epochs")
+SCALAR = ("n_hvg", "hvg_from", "split_by", "test_frac", "min_cells", "epochs",
+          "use_mask")
 
 
 def protocol_of(rep):
@@ -75,6 +76,15 @@ def protocol_of(rep):
     out = {}
     for k in REQUIRED_SAME + INFORMATIVE:
         v = block.get(k, args.get(k, rep.get(k, (rep.get("config") or {}).get(k))))
+        if k == "use_mask" and v is None:
+            # Masked and unmasked scoring are different measurements -- that is
+            # ERRATA E6 -- so a report that does not say which it did cannot be
+            # placed beside one that does.
+            raise SystemExit(
+                "a report does not record whether the measured-column mask was "
+                "applied. Masked and unmasked scoring are different measurements "
+                "(ERRATA E6), so they cannot share a table. Re-run it with a "
+                "version that records use_mask.")
         if k in SCALAR and isinstance(v, (list, tuple)) and len(v) == 1:
             v = v[0]
         if isinstance(v, list):
@@ -155,8 +165,11 @@ def main():
         with open(path) as f:
             rep = json.load(f)
         reports[path] = rep
-        protos[path] = protocol_of(rep)
+        # identify the report before judging its protocol: "I cannot tell what
+        # this file is" is the more fundamental complaint, and reporting the
+        # protocol problem first would send a reader looking in the wrong place
         rows += rows_of(path, rep, args.metric)
+        protos[path] = protocol_of(rep)
         fair = (rep.get("fairness") or {}).get("not_controlled") or []
         caveats += [f"{os.path.basename(path)}: {c}" for c in fair]
         for r in rows:

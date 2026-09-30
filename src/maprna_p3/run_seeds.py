@@ -133,7 +133,7 @@ def main():
     # how a producer and a consumer come to disagree (ERRATA E11).
     PROTOCOL_KEYS = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
                      "min_cells", "epochs", "inner_val_frac", "esm_table",
-                     "use_mask", "no_mask", "knn_k", "d_model")
+                     "use_mask", "knn_k", "d_model")
     proto, disagree = {}, {}
     for k in PROTOCOL_KEYS:
         vals = {s: (reports[s].get("provenance", {}).get("args", {}) or {}).get(k)

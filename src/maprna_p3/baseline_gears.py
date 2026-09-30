@@ -411,6 +411,11 @@ def main():
     report = dict(
         n_test_conditions=int(len(test_items)),
         train_h5ad=os.path.abspath(train_h5ad),
+        use_mask=True,  # scored through the intersected measured mask, unconditionally
+        protocol=dict(data_dirs=[os.path.abspath(d) for d in args.data_dirs],
+                      n_hvg=args.n_hvg, hvg_from=getattr(args, "hvg_from", "train"),
+                      split_by=args.split_by, test_frac=args.test_frac,
+                      min_cells=args.min_cells, seed=args.seed, use_mask=True),
         train_h5ad_is_cell_level=bool(args.train_h5ad),
         train_n_genes=int(adata.n_vars),
         train_n_cells=int(adata.n_obs),

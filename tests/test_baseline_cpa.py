@@ -114,6 +114,9 @@ def test_score_reads_the_interface_the_export_stage_writes(tmp_path):
 
     (tmp_path / "meta.json").write_text(json.dumps(dict(
         h5ad="unused.h5ad", split_by="target_gene", seed=0, n_hvg=n_gene,
+        protocol=dict(data_dirs=["unused.h5ad"], n_hvg=n_gene, hvg_from="train",
+                      split_by="target_gene", test_frac=0.15, min_cells=1, seed=0,
+                      use_mask=True),
         hvg_symbols=syms, train_conditions=[], valid_conditions=[],
         test_conditions=[f"P{i}+ctrl" for i in range(n_pert)],
         test_dataset_idx=[0] * n_pert)))
@@ -149,6 +152,9 @@ def test_score_marks_genes_cpa_does_not_cover(tmp_path):
     dev = np.ones((n_pert, n_gene), dtype=np.float32)
     (tmp_path / "meta.json").write_text(json.dumps(dict(
         h5ad="u.h5ad", split_by="target_gene", seed=0, n_hvg=n_gene,
+        protocol=dict(data_dirs=["u.h5ad"], n_hvg=n_gene, hvg_from="train",
+                      split_by="target_gene", test_frac=0.15, min_cells=1, seed=0,
+                      use_mask=True),
         hvg_symbols=syms, train_conditions=[], valid_conditions=[],
         test_conditions=["A+ctrl", "B+ctrl"], test_dataset_idx=[0, 0])))
     np.savez_compressed(tmp_path / "vcpe.npz", hvg_rows=np.arange(n_gene),
