@@ -210,8 +210,26 @@ methodological lesson needs restating rather than treating as resolved.
 (unmasked ≈0.8+ where masked ≈0).
 
 *Status:* fixed — a `measured` mask is propagated through the common core, the
-loss and all metrics. The magnitude of the effect on published numbers can only
-be established by re-running with data.
+loss and all metrics. `--no_mask` reproduces the pre-v4 behaviour so the size of
+the effect can be measured with one flag.
+
+**Read the real-data A/B with its unmeasured fraction in hand, and note this
+before the numbers rather than after them.** The effect scales with how much of
+the panel is unmeasured, which is a property of the dataset combination and not
+of the defect. The two CRISPRi screens now available here overlap heavily —
+Replogle RPE1's 8749 genes are nearly a subset of Tian 2021's 33538 — so the
+measured fraction is **0.987**, and only about 1.3% of the matrix is the constant
+block. A small A/B difference on this pair is therefore expected and is **not**
+evidence that the defect was minor in the withdrawn runs, which combined panels
+as disjoint as a genome-wide screen with a ~5k-gene one. Quantifying it at the
+magnitude that mattered needs those panels, which are on the host this
+environment cannot reach.
+
+The mechanism itself was demonstrated directly, on synthetic data where the
+unmeasured fraction can be set: unmasking lifted `train_mean` — a baseline that
+carries **no** perturbation information at all and must therefore score zero —
+from **-0.083 to +0.108**. A baseline that cannot possibly know which gene was
+perturbed scoring positively is the defect, stated as plainly as it can be.
 
 ---
 
@@ -609,6 +627,33 @@ baselines and the per-axis ablation table.
 ## Outstanding
 
 Ordered by what most constrains any claim the project can make:
+
+0. **Real data.** Until now nothing in this repository had been run on real
+   Perturb-seq data, and nothing could be: the ESM2 conditioning table existed
+   only on the machine that produced the withdrawn results, with no script to
+   rebuild it, and `dataverse.harvard.edu` — which hosts GEARS' own
+   `perturb_processed.h5ad` files — is refused outright by this environment's
+   egress policy.
+
+   Both are now addressed. `tools/build_esm2_gene_table.py` derives the table
+   from the UniProt REST API and an ESM2 checkpoint by a recorded procedure, and
+   `src/maprna_p3/ingest_scperturb.py` converts the scPerturb copies on Zenodo
+   into the layout the loader reads. Two real CRISPRi screens now go through the
+   whole pipeline: **ReplogleWeissman2022 RPE1** (2204 perturbations surviving a
+   20-cell gate, 3000 control cells, 8749 genes) and **TianKampmann2021 CRISPRi**
+   (184 perturbations, iPSC-derived neurons, 33538 genes). Together they give
+   2328 distinct target genes and a grouped split that holds out 349 of them.
+
+   The one caveat that must travel with every real number: the ESM2 variant.
+   650M — what the withdrawn results used — needs roughly a day for the human
+   proteome on 4 CPUs, so the tables are built with smaller variants and the
+   variant is recorded in each table's sidecar. It does not affect the comparison
+   against the ESM2 retrieval and ridge controls, which read the same table, but
+   it does affect the absolute scores. Note the direction: the controls are pure
+   functions of the embedding while the head also sees the control profile and
+   the dataset embedding, so a weaker table handicaps the controls more than the
+   head. That is why results are reported under more than one table rather than
+   the cheapest one.
 
 1. Run real external baselines. **GEARS now runs for real**
    (`src/maprna_p3/baseline_gears.py`), on VCPE's exact split (via GEARS's
