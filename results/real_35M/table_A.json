@@ -1,0 +1,125 @@
+{
+  "metric": "pearson_dev",
+  "shared_protocol": {
+    "data_dirs": [
+      "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+    ],
+    "n_hvg": 500,
+    "hvg_from": "train",
+    "split_by": "target_gene",
+    "test_frac": 0.15,
+    "min_cells": 1,
+    "seed": [
+      0,
+      1,
+      2
+    ],
+    "use_mask": true,
+    "esm_table": "/home/user/data_real/esm2_35M_human.pt"
+  },
+  "rows": [
+    {
+      "label": "P3 head",
+      "value": 0.2346618982155778,
+      "n": 3,
+      "sd": 0.014645157450522578,
+      "lo": 0.22042694503195842,
+      "hi": 0.2496853989438116,
+      "estimator": "mean_over_perturbations_of_within_perturbation_r",
+      "kind": "multi-seed mean",
+      "source": "seed_summary.json"
+    },
+    {
+      "label": "ridge_esm2",
+      "value": 0.22954156342532464,
+      "n": 3,
+      "sd": 0.015921237547348786,
+      "lo": 0.21575445137633126,
+      "hi": 0.24696709272411732,
+      "kind": "multi-seed mean",
+      "source": "seed_summary.json",
+      "paired_diff": 0.005120334790253173,
+      "paired_verdict": "mixed: model wins on 2/3 seeds"
+    },
+    {
+      "label": "knn_esm2",
+      "value": 0.20745208500256096,
+      "n": 3,
+      "sd": 0.03447112383742325,
+      "lo": 0.1743843932771412,
+      "hi": 0.24317327569407463,
+      "kind": "multi-seed mean",
+      "source": "seed_summary.json",
+      "paired_diff": 0.02720981321301687,
+      "paired_verdict": "mixed: model wins on 2/3 seeds"
+    },
+    {
+      "label": "train_mean",
+      "value": 0.012149685393523233,
+      "n": 3,
+      "sd": 0.0023533841426733922,
+      "lo": 0.009902433149077775,
+      "hi": 0.014596493262658576,
+      "kind": "multi-seed mean",
+      "source": "seed_summary.json",
+      "paired_diff": 0.22251221282205458,
+      "paired_verdict": "model beats this baseline on every seed"
+    },
+    {
+      "label": "zero",
+      "value": 0.0,
+      "n": 3,
+      "sd": 0.0,
+      "lo": 0.0,
+      "hi": 0.0,
+      "kind": "multi-seed mean",
+      "source": "seed_summary.json",
+      "paired_diff": 0.2346618982155778,
+      "paired_verdict": "model beats this baseline on every seed"
+    }
+  ],
+  "caveats": [],
+  "estimator": "mean_over_perturbations_of_within_perturbation_r",
+  "reports": [
+    "/home/user/VCPE-rna/results/real_35M/A_seeds/seed_summary.json"
+  ],
+  "provenance": {
+    "recorded_at": "2026-09-30T03:07:20+0000",
+    "git": {
+      "revision": "fae52d6ed6bc1afc4f415542aee176f99ae7e327",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": false,
+      "n_modified_files": 0
+    },
+    "command": "assemble_comparison.py --out_json results/real_35M/table_A.json --reports results/real_35M/A_seeds/seed_summary.json",
+    "argv": [
+      "tools/assemble_comparison.py",
+      "--out_json",
+      "results/real_35M/table_A.json",
+      "--reports",
+      "results/real_35M/A_seeds/seed_summary.json"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "reports": [
+        "results/real_35M/A_seeds/seed_summary.json"
+      ],
+      "out_json": "results/real_35M/table_A.json",
+      "out_md": null,
+      "metric": "pearson_dev",
+      "allow": []
+    }
+  }
+}
