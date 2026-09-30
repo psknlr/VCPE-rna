@@ -29,9 +29,15 @@ response direction and magnitude — a commercially usable replacement for Non-C
 >
 > Every defect, the numbers it invalidates, and how it was verified are in
 > **[docs/ERRATA.md](docs/ERRATA.md)**; how to regenerate the numbers under the
-> corrected protocol is in **[docs/REPRODUCE.md](docs/REPRODUCE.md)**. The code in `src/` is fixed; the numbers
-> have not yet been regenerated, and the corrected ones are expected to be
-> **lower**. Please do not cite figures from earlier tags.
+> corrected protocol is in **[docs/REPRODUCE.md](docs/REPRODUCE.md)**. The code in `src/` is fixed.
+>
+> **The first corrected measurement on real data is now in
+> [docs/RESULTS_REAL.md](docs/RESULTS_REAL.md).** On two real CRISPRi screens,
+> under a held-out-gene split, the model clears the trivial baselines but does
+> **not** convincingly beat a ridge regression over the same ESM2 embeddings
+> (paired CI [-0.016, +0.026]). This is a fresh measurement on reachable
+> datasets, not a regeneration of the withdrawn figures. Please do not cite
+> figures from earlier tags.
 >
 > What survives unchanged: the P2 shared-response finding (strengthened — the
 > same failure mode recurred twice more in our own pipeline), and the three

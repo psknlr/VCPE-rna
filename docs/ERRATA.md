@@ -626,7 +626,16 @@ baselines and the per-axis ablation table.
 
 ## Outstanding
 
-Ordered by what most constrains any claim the project can make:
+**Update: the first real-data runs are done.** The two items that most
+constrained every claim -- "no number regenerated" and "no external model run"
+-- are addressed. Two real CRISPRi screens now go through the whole corrected
+pipeline, and the head, four controls, GEARS and CPA are all scored on one
+footing. The result is in [RESULTS_REAL.md](RESULTS_REAL.md), and the honest
+headline is that on real data the model clears the trivial floors but **does not
+convincingly beat a ridge regression over the same embeddings** (paired CI
+[-0.016, +0.026]). The remaining items below are now about strengthening and
+widening that measurement, not about whether one exists. They are ordered by
+what most constrains any claim the project can make:
 
 0. **Real data.** Until now nothing in this repository had been run on real
    Perturb-seq data, and nothing could be: the ESM2 conditioning table existed
@@ -655,7 +664,15 @@ Ordered by what most constrains any claim the project can make:
    head. That is why results are reported under more than one table rather than
    the cheapest one.
 
-1. Run real external baselines. **GEARS now runs for real**
+1. Run real external baselines. **DONE on the Tian screen** -- GEARS
+   (-0.005, mean of 3 runs) and CPA (+0.018) are reported in
+   [RESULTS_REAL.md](RESULTS_REAL.md) Table D on the head's exact split, panel,
+   residual target and estimator, each trained on the cell-level input it is
+   published on. On that 27-gene task every method including the head is at the
+   floor, so the table proves the machinery, not a ranking. A larger screen at
+   cell level (Replogle did not fit this host's memory for GEARS's per-cell
+   graphs) is the remaining widening. Below is how the adapters were built.
+   **GEARS runs for real**
    (`src/maprna_p3/baseline_gears.py`), on VCPE's exact split (via GEARS's
    `split='custom'` mechanism), VCPE's HVG panel and mask, VCPE's residual
    target, and VCPE's estimators. The cheap controls
@@ -685,7 +702,15 @@ Ordered by what most constrains any claim the project can make:
    Still outstanding: **it has not been run on real Perturb-seq data**, and
    scGPT, CPA, AIDO.RNA-Pert, OligoAI, ASOptimizer, OligoWalk and RNAGenesis
    remain unrun.
-2. Re-run every reported number under the corrected protocol and replace the
+2. **A fresh measurement now exists** ([RESULTS_REAL.md](RESULTS_REAL.md)); the
+   withdrawn numbers themselves are not "re-run". They were measured on
+   adamson / norman / replogle_rpe1_essential, from a host this environment
+   cannot reach, under the broken protocol -- so there is nothing to reproduce,
+   only a corrected measurement to put in their place, on the datasets that are
+   reachable. Presenting the new numbers as a withdrawn figure "corrected" to a
+   new value would itself be a misrepresentation; they are a different dataset
+   pair, measured properly. The original intent, retained for the record:
+   re-run every reported number under the corrected protocol and replace the
    withdrawn figures.
 3. Quantify E6 on real data: a `--no_mask` A/B on one checkpoint. The harness
    exists and the mechanism is demonstrated on synthetic data (see E6); the
@@ -717,7 +742,10 @@ Ordered by what most constrains any claim the project can make:
    many would survive a grouped split. A grouping column only controls leakage
    if that count is small. **Not yet run on ASO Atlas**, which the repository
    does not ship.
-7. Multi-seed runs everywhere; single-run point estimates should not be quoted.
+7. Multi-seed runs everywhere. **DONE for the response line** -- Table A is 3
+   seeds, each varying both initialisation and the split, with paired
+   per-seed comparison and CIs (RESULTS_REAL.md). Still single-seed on the
+   efficacy line. Single-run point estimates should not be quoted.
    (`--seeds` exists on the ASO CV; the response line still runs one seed at a
    time.)
 8. ~~Result provenance~~ — **implemented** (`src/provenance.py`). Every result

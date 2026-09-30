@@ -392,7 +392,9 @@ A number that fails any of these is not ready, regardless of its value.
 
 ## 5. Known gaps
 
-These are open and listed in ERRATA.md's Outstanding section:
+The first real-data results produced by following this guide are in
+[RESULTS_REAL.md](RESULTS_REAL.md). These gaps are open and listed in ERRATA.md's
+Outstanding section:
 
 * **Two external models run; the rest do not.** GEARS and CPA now run on this
   repository's split, panel, residual target and estimator (§2.4b), alongside the
