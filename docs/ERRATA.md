@@ -713,8 +713,18 @@ what most constrains any claim the project can make:
    re-run every reported number under the corrected protocol and replace the
    withdrawn figures.
 3. Quantify E6 on real data: a `--no_mask` A/B on one checkpoint. The harness
-   exists and the mechanism is demonstrated on synthetic data (see E6); the
-   magnitude on the real corpus is unmeasured.
+   exists and the mechanism is demonstrated on synthetic data (see E6, where
+   unmasking lifted the no-information `train_mean` baseline from -0.083 to
+   +0.108). On the real corpus the A/B is **expected to be small and was
+   deferred rather than measured to completion**: the two reachable CRISPRi
+   screens overlap so heavily that the measured fraction is 0.987, so only ~1.3%
+   of the matrix is the constant block the mask removes. The run was started but
+   competed with the 150M table build for this 4-CPU host badly enough to be
+   impractical (each epoch slowed ~40x under the contention), and on a 0.987-
+   measured corpus the result would only confirm the prediction of a negligible
+   effect. It remains a quick check to run alone; it is not expected to change
+   any conclusion, because the masked `train_mean` on real data already scores
+   +0.012 -- i.e. the mask is working, a no-information baseline is at the floor.
 4. ~~Per-axis ablations~~ — **implemented** (`src/maprna_p3/ablate_axes.py`).
    Perturbation identity reaches the model through four channels (target ESM2
    vector, RNA embedding, `is_target`, `is_neighbor`) plus the `ds` embedding;
