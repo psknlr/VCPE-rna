@@ -1,0 +1,132 @@
+{
+  "model": "CPA",
+  "n_test_conditions": 27,
+  "n_cells_per_condition": [
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60,
+    60
+  ],
+  "vcpe_measured_fraction": 1.0,
+  "cpa_coverage_fraction": 1.0,
+  "intersected_mask_fraction": 1.0,
+  "cpa": {
+    "pearson_dev": 0.018047151126805158,
+    "pearson_dev_pooled": 0.12076424660452326,
+    "top50_dev": 0.09925925925925928,
+    "pearson_dev_ci95": [
+      -0.01514261099822843,
+      0.05765036323795073
+    ],
+    "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r"
+  },
+  "protocol": {
+    "data_dirs": [
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+    ],
+    "n_hvg": 500,
+    "hvg_from": "train",
+    "split_by": "target_gene",
+    "test_frac": 0.15,
+    "min_cells": 1,
+    "seed": 0,
+    "use_mask": true,
+    "esm_table": "/home/user/data_real/esm2_35M_human.pt"
+  },
+  "config": {
+    "split_by": "target_gene",
+    "seed": 0,
+    "n_hvg": 500
+  },
+  "environment_note": "CPA was run in a separate virtual environment because cpa-tools pins torch<2.0.0 while this repository requires torch>=2.1. Installing it alongside VCPE downgrades torch and breaks the model code. Record both environments next to this number.",
+  "fairness": {
+    "controlled": [
+      "Split: the external model is given VCPE's exact train/val/test condition sets, so both hold out the same perturbations (the same held-out genes under --split_by target_gene).",
+      "Predicted quantity: expression predictions are converted to the same residual VCPE predicts (fold-change against the same control mean, minus the same train-only common core). Scoring raw expression against a residual would flatter the external model, since the shared response dominates raw expression.",
+      "Gene space and mask: VCPE's HVG panel, with VCPE's measured mask intersected with the external model's own gene coverage.",
+      "Estimator: the same per-item and pooled correlation functions, named explicitly so the two are never mixed."
+    ],
+    "not_controlled": [
+      "Tuning effort is not equalised: the external model runs at or near its defaults, while VCPE's hyperparameters were chosen against this data over many runs. That asymmetry favours VCPE and no protocol alignment removes it; the honest fix is an equal tuning budget for both.",
+      "Capacity is not equalised: the external models are generally far larger than the 5.7M-parameter VCPE head. If VCPE wins it wins as the smaller model; if it loses, the size difference is an explanation rather than an excuse.",
+      "Each external model keeps its own preprocessing (its own graph, its own highly-variable-gene or DE selection). Disabling that would not be a comparison against the published method.",
+      "Input granularity differs on purpose: CPA trained on individual cells while the P3 head trains on the pseudobulk mean of the same cells. The split, panel, predicted quantity and metric are identical. CPA models variation within a condition, so a pseudobulk input would not be a fairer comparison, only a meaningless one."
+    ]
+  },
+  "provenance": {
+    "recorded_at": "2026-09-30T04:01:13+0000",
+    "git": {
+      "revision": "77263873c220b882b21c15775de3ac89da07f586",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": false,
+      "n_modified_files": 0
+    },
+    "command": "baseline_cpa.py score --work /home/user/VCPE-rna/results/real_35M/D_cpa --out_json /home/user/VCPE-rna/results/real_35M/D_cpa.json",
+    "argv": [
+      "src/maprna_p3/baseline_cpa.py",
+      "score",
+      "--work",
+      "/home/user/VCPE-rna/results/real_35M/D_cpa",
+      "--out_json",
+      "/home/user/VCPE-rna/results/real_35M/D_cpa.json"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "stage": "score",
+      "work": "/home/user/VCPE-rna/results/real_35M/D_cpa",
+      "prepare_venv": false,
+      "venv": ".venv_cpa",
+      "venv_python": null,
+      "data_dirs": [],
+      "esm_table": "",
+      "train_h5ad": null,
+      "n_hvg": 2000,
+      "hvg_from": "train",
+      "test_frac": 0.15,
+      "inner_val_frac": 0.15,
+      "split_by": "target_gene",
+      "seed": 0,
+      "min_cells": 3,
+      "knn_k": 10,
+      "max_epochs": 100,
+      "batch_size": 128,
+      "n_latent": 32,
+      "patience": 10,
+      "out_json": "/home/user/VCPE-rna/results/real_35M/D_cpa.json"
+    }
+  }
+}

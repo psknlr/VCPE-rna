@@ -128,10 +128,48 @@ genes, by this model or by a ridge fit. Any single-small-dataset number in this
 field, including several in the withdrawn tables, should be read with that in
 mind.
 
-## External baselines (GEARS, CPA)
+## Table D -- head vs GEARS vs CPA (Tian alone, same split/panel/estimator)
 
-These are still running as of this writing (GEARS 3 runs, then CPA across two
-environments); `results/real_35M/table_D.*` will carry the assembled numbers.
+`pearson_dev`, on the 27 held-out genes of the Tian screen:
+
+| model | pearson_dev | runs | note |
+|---|---|---|---|
+| CPA | +0.018 | 1 | trained on cells |
+| P3 head | +0.003 | 1 | pseudobulk |
+| zero | +0.000 | 1 | predict no change |
+| train_mean | -0.002 | 1 | no gene identity |
+| ridge_esm2 | -0.003 | 1 | linear map over ESM2 |
+| GEARS | -0.005 | 3 | mean; sd 0.036, range -0.047..+0.017 |
+| knn_esm2 | -0.009 | 1 | retrieval over ESM2 |
+
+**Every method is within +/-0.02 of zero, and the entire spread between them
+(-0.009 to +0.018) is smaller than GEARS's own run-to-run noise (sd 0.036 across
+3 identical runs).** On 27 held-out genes, no method -- the head, a linear map, a
+retrieval baseline, CPA or GEARS -- is distinguishable from predict-no-change,
+and the differences between them are not distinguishable from noise. This is the
+data-scale floor described above, and it is the honest content of the table: it
+demonstrates the comparison machinery runs all five methods on identical footing
+on real data, and it establishes nothing about their relative merit, because
+there is no signal above the floor to rank them by.
+
+GEARS's spread is itself a documented finding (ERRATA E14a): it is not
+deterministic at a fixed seed, so a single GEARS run is noise and only the mean
+over runs, with its spread, is meaningful.
+
+### Fairness caveats carried into Table D
+
+Each external model trained on the cell-level input it is published on rather
+than the pseudobulk the head uses (GEARS cannot run on pseudobulk at all -- its
+differential-expression step has no statistics for a group of one). GEARS's
+cell input was additionally capped at 20 cells per perturbation and 5000 genes
+so it would finish on this 4-CPU host; the split, gene panel, predicted quantity
+and estimator are identical to the head's regardless. Every such asymmetry is
+recorded in each report's `fairness` block, and `table_D.md` reproduces them in
+full. Read the table as "these published models, on this footing, on a task at
+the floor" -- not as a controlled ranking of architectures.
+
+## Why the external comparison is not yet conclusive
+
 Because the Tian-alone task is at the floor for
 every method (above), this comparison is best read as "can any published model
 beat predict-no-change on 27 held-out genes" rather than as a ranking of

@@ -44,11 +44,17 @@ def gears_report(path, value, **over):
              split_by="target_gene", test_frac=0.15, min_cells=1, use_mask=True,
              esm_table="/t/esm.pt", seed=0)
     a.update(over)
-    rep = dict(gears=dict(pearson_dev=value, pearson_dev_estimator=
-                          "mean_over_perturbations_of_within_perturbation_r"),
-               gears_across_runs=dict(n_runs=5, sd=.03,
-                                                                    min=.01, max=.12),
-               fairness=dict(not_controlled=["tuning effort differs"]), **prov(**a))
+    # the REAL GEARS schema: per-run list + across-runs with metric-prefixed keys,
+    # and no top-level `gears` block. A fixture in any other shape would not have
+    # caught the mismatch that these tests exist for.
+    rep = dict(
+        gears_per_run=[dict(run=i + 1, pearson_dev=value,
+                            pearson_dev_estimator=
+                            "mean_over_perturbations_of_within_perturbation_r")
+                       for i in range(5)],
+        gears_across_runs=dict(n_runs=5, pearson_dev_mean=value, pearson_dev_sd=.03,
+                               pearson_dev_min=.01, pearson_dev_max=.12),
+        fairness=dict(not_controlled=["tuning effort differs"]), **prov(**a))
     Path(path).write_text(json.dumps(rep))
 
 
@@ -221,3 +227,73 @@ def test_a_multi_seed_mean_cannot_hide_a_different_estimator(tmp_path):
             "--out_json", str(tmp_path / "o.json"))
     assert p.returncode != 0
     assert "estimator" in p.stderr and "E4" in p.stderr
+
+
+# --------------------------------------------------------------------------
+# the real external-adapter schemas -- these must round-trip, because the
+# assembler first refused a real GEARS report: its reader had been written to a
+# schema the adapter does not use (ERRATA E11 shape, again). The fixtures below
+# copy the exact structure the adapters write, not one invented to match a reader.
+# --------------------------------------------------------------------------
+
+def _ext_protocol():
+    return dict(data_dirs=["/d/tian.h5ad"], n_hvg=500, hvg_from="train",
+                split_by="target_gene", test_frac=0.15, min_cells=1, seed=0,
+                use_mask=True, esm_table="/t/esm.pt")
+
+
+def test_the_real_gears_report_schema_round_trips(tmp_path):
+    """GEARS writes gears_per_run + gears_across_runs with metric-prefixed keys,
+    and no top-level `gears` block. This is the exact shape that was refused."""
+    rep = dict(
+        gears_per_run=[
+            dict(run=1, pearson_dev=-0.047,
+                 pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r"),
+            dict(run=2, pearson_dev=+0.017,
+                 pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r"),
+            dict(run=3, pearson_dev=+0.016,
+                 pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r"),
+        ],
+        gears_across_runs=dict(n_runs=3, pearson_dev_mean=-0.0049,
+                               pearson_dev_sd=0.0364, pearson_dev_min=-0.047,
+                               pearson_dev_max=0.017),
+        fairness=dict(not_controlled=["granularity differs on purpose"]),
+        provenance=dict(args=_ext_protocol(), git=dict(dirty=False)))
+    (tmp_path / "g.json").write_text(json.dumps(rep))
+    out = tmp_path / "o.json"
+    p = run("--reports", str(tmp_path / "g.json"), "--out_json", str(out))
+    assert p.returncode == 0, p.stdout + p.stderr
+    row = [r for r in json.loads(out.read_text())["rows"] if r["label"] == "GEARS"][0]
+    assert abs(row["value"] - (-0.0049)) < 1e-6, "GEARS mean was not read"
+    assert row["n"] == 3 and abs(row["sd"] - 0.0364) < 1e-6
+    assert row["estimator"], "the estimator was dropped, so E4 could not be caught"
+
+
+def test_the_real_cpa_report_schema_round_trips(tmp_path):
+    """CPA writes a single `cpa` block with the metric directly and no _across_runs."""
+    rep = dict(
+        cpa=dict(pearson_dev=0.018, pearson_dev_pooled=0.121,
+                 pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r"),
+        protocol=_ext_protocol(),
+        fairness=dict(not_controlled=["granularity differs on purpose"]),
+        provenance=dict(args=dict(work="x"), git=dict(dirty=False)))
+    (tmp_path / "c.json").write_text(json.dumps(rep))
+    out = tmp_path / "o.json"
+    p = run("--reports", str(tmp_path / "c.json"), "--out_json", str(out))
+    assert p.returncode == 0, p.stdout + p.stderr
+    row = [r for r in json.loads(out.read_text())["rows"] if r["label"] == "CPA"][0]
+    assert abs(row["value"] - 0.018) < 1e-6 and row["n"] == 1
+
+
+def test_the_committed_adapters_still_write_the_schema_the_assembler_reads(tmp_path):
+    """A structural check on the adapter source, so a rename there fails here.
+
+    The refusal that motivated these tests was a silent key mismatch: the adapter
+    wrote one schema and the assembler read another, and nothing connected them.
+    """
+    gears = (ROOT / "src" / "maprna_p3" / "baseline_gears.py").read_text()
+    assert "gears_across_runs" in gears and "gears_per_run" in gears
+    assert "pearson_dev_mean" in gears, \
+        "GEARS no longer writes pearson_dev_mean; update the assembler reader"
+    cpa = (ROOT / "src" / "maprna_p3" / "baseline_cpa.py").read_text()
+    assert 'cpa=score(' in cpa or '"cpa"' in cpa or "cpa=dict" in cpa

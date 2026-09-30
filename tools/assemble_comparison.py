@@ -144,20 +144,43 @@ def rows_of(path, rep, metric):
                              kind="deterministic control", source=src))
         return rows
 
-    # an external adapter: one named block carrying the metric
+    # An external adapter. The two adapters do not share a schema, so both are
+    # handled: CPA writes a single `cpa` block with the metric directly; GEARS,
+    # which repeats runs because it is not deterministic at a fixed seed, writes
+    # `gears_across_runs` with metric-prefixed keys (pearson_dev_mean/_sd/_min/
+    # _max) and a `gears_per_run` list. Reading only the block form is how this
+    # first refused a real GEARS report -- the same producer/consumer mismatch as
+    # ERRATA E11, found because no test ran a real adapter report through here.
     for key in ("gears", "cpa", "scgpt"):
-        if key in rep and isinstance(rep[key], dict):
-            blk = rep[key]
-            across = rep.get(f"{key}_across_runs") or rep.get("across_runs") or {}
-            rows.append(dict(
-                label=key.upper(), value=blk.get(metric),
-                n=across.get("n_runs") or rep.get("n_runs") or 1,
-                sd=across.get("sd"), lo=across.get("min"), hi=across.get("max"),
-                estimator=blk.get("pearson_dev_estimator"),
-                kind=("mean over runs" if (across.get("n_runs") or 0) > 1
-                      else "single run"),
-                source=src))
-            return rows
+        across = rep.get(f"{key}_across_runs")
+        per_run = rep.get(f"{key}_per_run")
+        blk = rep.get(key) if isinstance(rep.get(key), dict) else None
+        if across is None and per_run is None and blk is None:
+            continue
+        if across:
+            value = across.get(f"{metric}_mean", across.get("mean"))
+            sd = across.get(f"{metric}_sd", across.get("sd"))
+            lo = across.get(f"{metric}_min", across.get("min"))
+            hi = across.get(f"{metric}_max", across.get("max"))
+            n = across.get("n_runs") or (len(per_run) if per_run else 1)
+        elif blk:
+            value, sd, lo, hi, n = blk.get(metric), None, None, None, 1
+        else:                                    # only per_run present
+            vals = [r.get(metric) for r in per_run if r.get(metric) is not None]
+            import statistics
+            value = statistics.fmean(vals) if vals else None
+            sd = statistics.stdev(vals) if len(vals) > 1 else None
+            lo, hi, n = (min(vals) if vals else None), (max(vals) if vals else None), len(vals)
+        # estimator: from the block, else from a per-run entry
+        est = (blk or {}).get("pearson_dev_estimator")
+        if est is None and per_run:
+            est = per_run[0].get("pearson_dev_estimator")
+        rows.append(dict(
+            label=key.upper(), value=value, n=n, sd=sd, lo=lo, hi=hi,
+            estimator=est,
+            kind=("mean over runs" if (n or 0) > 1 else "single run"),
+            source=src))
+        return rows
     raise SystemExit(f"{path}: cannot tell which model this report describes. "
                      "Expected a run_seeds summary, a train_p3 final_report, or an "
                      "external adapter report.")
