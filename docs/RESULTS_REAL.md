@@ -223,6 +223,63 @@ screens overlap almost completely. It says nothing about the magnitude in the
 withdrawn runs, which combined a genome-wide screen with a ~5k-gene panel. Do not
 quote one as an estimate of the other.
 
+## Activating the dead network channel: a negative result, and why it was predictable
+
+The ablation above found all conditioning flowing through one channel, so the
+head's +0.027 edge over ridge is non-linearity on features the controls also
+have. `is_neighbor` was the one channel that could change that: it encodes a
+mechanistic prior -- knocking a gene down perturbs its interaction partners --
+that ridge and k-NN structurally cannot express from a target vector. It had
+simply never been fed. Built from STRING v12.0 (443,966 edges at
+combined_score >= 700, 77% of genes covered, median degree 13) and re-run on the
+same 3 seeds and 150M table:
+
+| | pearson_dev |
+|---|---|
+| head without the network channel | +0.2927 +/- 0.0055 |
+| head **with** the network channel | +0.2932 +/- 0.0056 |
+| delta | **+0.0005** |
+
+**It buys nothing.** +0.0005 is an order of magnitude below the seed-to-seed sd
+(0.0055). The ablation agrees: `is_nb_off` costs -0.0001 and `is_nb_shuffle`
+-0.0002, so the channel is now technically live (r = 0.9999 rather than exactly
+1.0000) but carries no usable information. The graph-only control agrees too:
+`neighbor_prior` scores **+0.0114** against `train_mean`'s +0.0121, i.e. the one
+fitted graph parameter finds nothing -- the graph buys nothing on its own either.
+
+**The reason is arithmetic, and it means the design cannot be rescued by more
+data.** `is_neighbor` fires on **0.27%** of held-out (item, gene) cells: mean
+1.37 flagged genes per 500-gene panel, and only **9 of 352** held-out items have
+as many as 5 partner genes in the panel at all. A target's ~13-16 partners are a
+tiny subset of the ~8,700-gene universe, so the fraction of any panel that is
+"partner" is about degree/universe ~ 0.15-0.3% **whatever the panel size** --
+widen the panel and numerator and denominator grow together. A perfect prior on
+0.27% of cells cannot move a panel-wide correlation.
+
+Scoring the two checkpoints on the partner cells alone confirms the metric is not
+merely hiding an effect -- it confirms there is nothing measurable there:
+
+| restricted to | without | with |
+|---|---|---|
+| STRING-partner cells (>=5 per item: **9 items**) | +0.0176 | -0.0169 |
+| non-partner cells | +0.2880 | +0.2885 |
+
+The partner-cell comparison rests on 9 items and is noise; it is reported because
+omitting it would leave the panel-wide null looking like the only evidence.
+
+**What this is and is not.** It is *not* evidence that protein-interaction priors
+are useless for perturbation response -- this design cannot test that claim. It
+is evidence that **a sparse binary partner indicator over the output panel is the
+wrong way to inject network information**, because its support is a fixed ~0.2%
+of the scored matrix. The measurement also says where network information would
+have to enter instead: the ablation shows the target ESM2 vector is the *only*
+live channel, so a graph signal should modulate that vector -- for example a
+neighbourhood-averaged embedding, which is dense rather than 0.2%-sparse -- and
+any such variant must hand the same augmented features to ridge and k-NN, or it
+repeats the error of crediting extra input to architecture.
+
+I expected this channel to help and said so before running it. It did not.
+
 ## A scale check that matters for how Table A is read
 
 Table A trains on both screens together. Table D repeats the head on the **Tian

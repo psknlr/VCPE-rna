@@ -1,0 +1,162 @@
+{
+  "report": {
+    "intact": {
+      "r_vs_real": 1.0,
+      "pearson_dev": 0.28843608010292543,
+      "delta_vs_intact": 0.0,
+      "pearson_dev_pooled": 0.3215960963106518,
+      "top50_dev": 0.3224431818181818,
+      "pearson_dev_ci95": [
+        0.23596821203765178,
+        0.3371619758121747
+      ]
+    },
+    "esm_zero": {
+      "r_vs_real": 0.3152164410705542,
+      "pearson_dev": 0.005455868681576235,
+      "delta_vs_intact": -0.2829802114213492,
+      "pearson_dev_pooled": 0.15022209997858066,
+      "top50_dev": 0.3397727272727273
+    },
+    "esm_shuffle": {
+      "r_vs_real": 0.16063943111104342,
+      "pearson_dev": 0.11681737493186195,
+      "delta_vs_intact": -0.17161870517106348,
+      "pearson_dev_pooled": 0.0963821275953921,
+      "top50_dev": 0.3188636363636364
+    },
+    "rna_off": {
+      "r_vs_real": 1.0,
+      "pearson_dev": 0.28843608010292543,
+      "delta_vs_intact": 0.0,
+      "pearson_dev_pooled": 0.3215960963106518,
+      "top50_dev": 0.3224431818181818
+    },
+    "is_tgt_off": {
+      "r_vs_real": 0.9999956324206398,
+      "pearson_dev": 0.28845063748919386,
+      "delta_vs_intact": 1.4557386268432282e-05,
+      "pearson_dev_pooled": 0.3216051694276794,
+      "top50_dev": 0.3225
+    },
+    "is_tgt_shuffle": {
+      "r_vs_real": 0.9999896743348483,
+      "pearson_dev": 0.2884319132792327,
+      "delta_vs_intact": -4.166823692752786e-06,
+      "pearson_dev_pooled": 0.3215992944387244,
+      "top50_dev": 0.32255681818181814
+    },
+    "is_nb_off": {
+      "r_vs_real": 0.9998885079133537,
+      "pearson_dev": 0.2882981795010322,
+      "delta_vs_intact": -0.00013790060189322606,
+      "pearson_dev_pooled": 0.32150883949418196,
+      "top50_dev": 0.3224431818181818
+    },
+    "is_nb_shuffle": {
+      "r_vs_real": 0.9997823558053778,
+      "pearson_dev": 0.28820180123398215,
+      "delta_vs_intact": -0.00023427886894328287,
+      "pearson_dev_pooled": 0.3214671742506983,
+      "top50_dev": 0.3219886363636364
+    },
+    "ds_shuffle": {
+      "r_vs_real": 0.8349416901426676,
+      "pearson_dev": 0.22508232166240125,
+      "delta_vs_intact": -0.06335375844052418,
+      "pearson_dev_pooled": 0.24801319394629726,
+      "top50_dev": 0.3117045454545455
+    },
+    "all_off": {
+      "r_vs_real": 0.3150522259347291,
+      "pearson_dev": 0.005370192695922194,
+      "delta_vs_intact": -0.2830658874070032,
+      "pearson_dev_pooled": 0.15016412560590522,
+      "top50_dev": 0.3397159090909091,
+      "pearson_dev_ci95": [
+        -0.06171362866581977,
+        0.06957297849233521
+      ]
+    },
+    "interpretation": {
+      "intact_pearson_dev": 0.28843608010292543,
+      "no_conditioning_floor_zeroed": 0.005370192695922194,
+      "no_conditioning_floor_shuffled": 0.11681737493186195,
+      "conditioning_gain": 0.17161870517106348,
+      "conditioning_gain_basis": "esm_shuffle (preserves input statistics)",
+      "conditioning_gain_vs_zeroed_floor": 0.2830658874070032,
+      "note": "The defensible claim about conditioning is the gap between the intact model and a floor that destroys gene identity WITHOUT changing the input distribution -- that is esm_shuffle, not all_off. Zeroing is off-distribution and flatters the floor, so the gain against it is an upper bound and should not be quoted alone. A large ds_shuffle delta means dataset-level commonality is carrying part of the score, which is the same class of artefact as the P2 shared-response shortcut."
+    }
+  },
+  "n_test": 352,
+  "split_by": "target_gene",
+  "measured_fraction": 0.9986363636363637,
+  "ckpt": "/home/user/VCPE-rna/results/real_150M_string/A_seeds/seed0/ckpt_p3_best_dev.pt",
+  "provenance": {
+    "recorded_at": "2026-09-30T17:27:38+0000",
+    "git": {
+      "revision": "60e5b0f48828314b8f87ebb90fea2e5352d18f2e",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": false,
+      "n_modified_files": 0
+    },
+    "command": "ablate_axes.py --ckpt /home/user/VCPE-rna/results/real_150M_string/A_seeds/seed0/ckpt_p3_best_dev.pt --data_dirs /home/user/data_real/gears_fmt/replogle_rpe1.h5ad /home/user/data_real/gears_fmt/tian2021_crispri.h5ad --esm_table /home/user/data_real/esm2_150M_human.pt --n_hvg 500 --min_cells 1 --split_by target_gene --hvg_from train --seed 0 --string_neighbors /home/user/data_real/string_neighbors_150M.npy --out_json /home/user/VCPE-rna/results/real_150M_string/C_ablation.json",
+    "argv": [
+      "src/maprna_p3/ablate_axes.py",
+      "--ckpt",
+      "/home/user/VCPE-rna/results/real_150M_string/A_seeds/seed0/ckpt_p3_best_dev.pt",
+      "--data_dirs",
+      "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad",
+      "--esm_table",
+      "/home/user/data_real/esm2_150M_human.pt",
+      "--n_hvg",
+      "500",
+      "--min_cells",
+      "1",
+      "--split_by",
+      "target_gene",
+      "--hvg_from",
+      "train",
+      "--seed",
+      "0",
+      "--string_neighbors",
+      "/home/user/data_real/string_neighbors_150M.npy",
+      "--out_json",
+      "/home/user/VCPE-rna/results/real_150M_string/C_ablation.json"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "ckpt": "/home/user/VCPE-rna/results/real_150M_string/A_seeds/seed0/ckpt_p3_best_dev.pt",
+      "data_dirs": [
+        "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+        "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+      ],
+      "esm_table": "/home/user/data_real/esm2_150M_human.pt",
+      "string_neighbors": "/home/user/data_real/string_neighbors_150M.npy",
+      "rna_encoder_ckpt": "",
+      "fasta": "",
+      "n_hvg": 500,
+      "hvg_from": "train",
+      "test_frac": 0.15,
+      "inner_val_frac": 0.15,
+      "split_by": "target_gene",
+      "seed": 0,
+      "min_cells": 1,
+      "batch": 128,
+      "knn_k": 10,
+      "out_json": "/home/user/VCPE-rna/results/real_150M_string/C_ablation.json"
+    }
+  }
+}
