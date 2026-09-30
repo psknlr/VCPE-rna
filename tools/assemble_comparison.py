@@ -85,10 +85,15 @@ def rows_of(path, rep, metric):
                          kind="multi-seed mean", source=src))
         for name, b in (rep.get("baselines") or {}).items():
             pr = (rep.get("paired_vs_baselines") or {}).get(name, {})
+            # run_seeds names this key mean_difference, not mean. Reading the
+            # wrong one printed "n/a" in the paired column with no error -- the
+            # same shape as ERRATA E11's committed-JSON mismatches, so both
+            # spellings are accepted and the test fixture uses the producer's.
+            pd_ = pr.get("mean_difference", pr.get("mean"))
             rows.append(dict(label=name, value=b.get("mean"), n=b.get("n"),
                              sd=b.get("sd"), lo=b.get("min"), hi=b.get("max"),
                              kind="multi-seed mean", source=src,
-                             paired_diff=pr.get("mean"), paired_verdict=pr.get("verdict")))
+                             paired_diff=pd_, paired_verdict=pr.get("verdict")))
         return rows
 
     # single train_p3 run

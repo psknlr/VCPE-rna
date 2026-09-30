@@ -28,7 +28,9 @@ def seeds_report(path, value, seeds=(0, 1, 2), **over):
                          max=value + .01),
                baselines=dict(knn_esm2=dict(mean=0.20, n=len(seeds), sd=0.02,
                                             min=.18, max=.22)),
-               paired_vs_baselines=dict(knn_esm2=dict(mean=value - 0.20,
+               # key name copied from run_seeds.summarise/paired output, not invented:
+               # a fixture that spells it differently would hide a real mismatch
+               paired_vs_baselines=dict(knn_esm2=dict(mean_difference=value - 0.20,
                                                       verdict="loses on every seed")),
                **prov(**a))
     Path(path).write_text(json.dumps(rep))
@@ -145,3 +147,21 @@ def test_a_missing_report_path_is_an_error(tmp_path):
     p = run("--reports", str(tmp_path / "nope_*.json"), "--out_json",
             str(tmp_path / "o.json"))
     assert p.returncode != 0 and "no report matched" in p.stderr
+
+
+def test_the_paired_column_reads_the_key_run_seeds_actually_writes(tmp_path):
+    """Regression: the assembler read "mean" where run_seeds writes
+    "mean_difference", so the paired column printed n/a with no error -- the same
+    shape as the committed-JSON mismatches in ERRATA E11."""
+    src = (ROOT / "src" / "maprna_p3" / "run_seeds.py").read_text()
+    assert "mean_difference=float(d.mean())" in src, \
+        "run_seeds no longer writes mean_difference; update the assembler with it"
+    seeds_report(tmp_path / "s.json", 0.05, seeds=(0,))
+    out = tmp_path / "o.json"
+    p = run("--reports", str(tmp_path / "s.json"), "--out_json", str(out))
+    assert p.returncode == 0, p.stdout + p.stderr
+    rep = json.loads(out.read_text())
+    knn = [r for r in rep["rows"] if r["label"] == "knn_esm2"][0]
+    assert knn["paired_diff"] is not None, "the paired difference was dropped"
+    assert abs(knn["paired_diff"] - (0.05 - 0.20)) < 1e-9
+    assert "n/a" not in out.with_suffix(".md").read_text().split("Paired")[1]
