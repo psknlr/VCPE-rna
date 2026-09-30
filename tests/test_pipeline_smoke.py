@@ -224,3 +224,45 @@ def test_the_test_visible_panel_is_available_but_says_so_loudly(synth):
                 "--split_by", "target_gene", "--hvg_from", "all"])
     assert "[hvg] WARNING" in log
     assert "chosen with the test split visible" in log
+
+
+def test_run_seeds_output_feeds_the_assembler_without_losing_a_column(synth):
+    """End to end through the real producers, into the real consumer.
+
+    Three defects of one shape have now been found by hand: the sirnamod
+    feature_names/feat_names mismatch, the committed-JSON mismatches in ERRATA
+    E11, and the assembler reading `mean` where run_seeds writes
+    `mean_difference`. In each case a producer and a consumer disagreed about a
+    key and the symptom was a missing number, not an exception. Unit tests with
+    hand-written fixtures cannot catch that, because the fixture is written to
+    match whichever side the author was looking at.
+    """
+    out = synth / "seeds_for_assembly"
+    _run(["src/maprna_p3/run_seeds.py", "--out_dir", str(out), "--seeds", "0", "1",
+          "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+          "--esm_table", str(synth / "esm.pt"), "--epochs", "2", "--n_hvg", "40",
+          "--batch_size", "8", "--split_by", "target_gene"])
+    summary = out / "seed_summary.json"
+    assert summary.exists()
+
+    table = synth / "table.json"
+    _run(["tools/assemble_comparison.py", "--reports", str(summary),
+          "--out_json", str(table)])
+    rep = json.loads(table.read_text())
+
+    labels = {r["label"] for r in rep["rows"]}
+    assert "P3 head" in labels
+    for name in ("zero", "train_mean", "knn_esm2", "ridge_esm2"):
+        assert name in labels, f"{name} did not survive into the table"
+        row = [r for r in rep["rows"] if r["label"] == name][0]
+        assert row["value"] is not None, f"{name} lost its value"
+        assert row["paired_diff"] is not None, \
+            f"{name} lost its paired difference -- producer/consumer key mismatch"
+        assert row["paired_verdict"], f"{name} lost its verdict"
+        assert row["n"] == 2, f"{name} lost the seed count"
+
+    md = (table.with_suffix(".md")).read_text()
+    assert "Paired per-seed comparison" in md
+    assert "n/a" not in md.split("Paired per-seed comparison")[1], \
+        "a column rendered as n/a, which is how a key mismatch looks"
+    assert rep["shared_protocol"]["split_by"] == "target_gene"

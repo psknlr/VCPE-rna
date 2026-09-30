@@ -126,6 +126,29 @@ def main():
         "split_by": sorted({str(reports[s].get("split_by")) for s in seeds}),
     }
 
+    # One canonical statement of the protocol, taken from the seed reports'
+    # own provenance rather than re-derived from this script's passthrough
+    # arguments. A consumer that has to parse `forward` to learn the gene panel
+    # will eventually parse it differently from the script that used it, which is
+    # how a producer and a consumer come to disagree (ERRATA E11).
+    PROTOCOL_KEYS = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
+                     "min_cells", "epochs", "inner_val_frac", "esm_table",
+                     "use_mask", "no_mask", "knn_k", "d_model")
+    proto, disagree = {}, {}
+    for k in PROTOCOL_KEYS:
+        vals = {s: (reports[s].get("provenance", {}).get("args", {}) or {}).get(k)
+                for s in seeds}
+        uniq = {repr(v) for v in vals.values()}
+        if len(uniq) == 1:
+            proto[k] = next(iter(vals.values()))
+        else:
+            disagree[k] = vals
+    if disagree:
+        raise SystemExit(
+            "the seeds were not run under the same protocol, so aggregating them "
+            f"would average different experiments: {disagree}")
+    summary["protocol"] = proto
+
     # paired differences: model and baselines share a seed, hence a split
     paired = {}
     for n in base_names:

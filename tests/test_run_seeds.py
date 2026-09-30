@@ -140,3 +140,57 @@ def test_forwarding_a_banned_argument_is_refused():
         capture_output=True, text=True, timeout=120)
     assert p.returncode != 0
     assert "set per run" in (p.stdout + p.stderr)
+
+
+def test_it_refuses_to_average_seeds_run_under_different_protocols(tmp_path):
+    """Aggregating seeds that used different panels averages two experiments.
+
+    run_seeds normally launches the seeds itself, so they agree by construction --
+    but with --skip_existing it reuses whatever reports are already on disk, and
+    those can come from anywhere. A mean over a 500-gene run and a 2000-gene run
+    is not a mean of anything.
+    """
+    root = Path(__file__).resolve().parents[1]
+    for seed, n_hvg in ((0, 500), (1, 2000)):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.1 + seed * 0.01, split_by="target_gene", selected_epoch=3,
+            baselines=dict(zero=dict(pearson_dev=0.0)),
+            provenance=dict(args=dict(n_hvg=n_hvg, split_by="target_gene",
+                                      data_dirs=["a.h5ad"], hvg_from="train",
+                                      min_cells=1, test_frac=0.15, epochs=3)))))
+    p = subprocess.run(
+        [sys.executable, str(root / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing"],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0, p.stdout
+    assert "not run under the same protocol" in (p.stdout + p.stderr)
+    assert "n_hvg" in (p.stdout + p.stderr)
+
+
+def test_matching_seeds_are_aggregated_and_the_protocol_is_stated_once(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    for seed in (0, 1):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.10 + seed * 0.02, split_by="target_gene", selected_epoch=3,
+            baselines=dict(zero=dict(pearson_dev=0.0),
+                           knn_esm2=dict(pearson_dev=0.20)),
+            provenance=dict(args=dict(n_hvg=500, split_by="target_gene",
+                                      data_dirs=["a.h5ad"], hvg_from="train",
+                                      min_cells=1, test_frac=0.15, epochs=3)))))
+    out = tmp_path / "summary.json"
+    p = subprocess.run(
+        [sys.executable, str(root / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing",
+         "--summary_json", str(out)],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0, p.stdout + p.stderr
+    rep = json.loads(out.read_text())
+    assert rep["protocol"]["n_hvg"] == 500
+    assert rep["protocol"]["split_by"] == "target_gene"
+    # and the honest verdict is still reported
+    assert rep["paired_vs_baselines"]["knn_esm2"]["verdict"] == \
+        "model loses to this baseline on every seed"

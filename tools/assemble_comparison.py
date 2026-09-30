@@ -54,13 +54,29 @@ def parse_args():
     return p.parse_args()
 
 
+# fields that name one value per run. A report may carry them wrapped in a
+# one-element list -- run_seeds used to summarise split_by as the SET of values
+# across its seeds -- and comparing a list against the same value unwrapped would
+# report a mismatch that does not exist.
+SCALAR = ("n_hvg", "hvg_from", "split_by", "test_frac", "min_cells", "epochs")
+
+
 def protocol_of(rep):
-    """The protocol fingerprint, from the provenance block the scripts write."""
+    """The protocol fingerprint.
+
+    Preference order: the report's own `protocol` block, then the parsed
+    arguments in its provenance, then a top-level key. The first is canonical --
+    a consumer that reconstructs the protocol from a passthrough argument list
+    will eventually reconstruct it differently from the script that used it.
+    """
     prov = rep.get("provenance", {}) or {}
     args = prov.get("args", {}) or {}
+    block = rep.get("protocol", {}) or {}
     out = {}
     for k in REQUIRED_SAME + INFORMATIVE:
-        v = args.get(k, rep.get(k, rep.get("config", {}).get(k)))
+        v = block.get(k, args.get(k, rep.get(k, (rep.get("config") or {}).get(k))))
+        if k in SCALAR and isinstance(v, (list, tuple)) and len(v) == 1:
+            v = v[0]
         if isinstance(v, list):
             v = tuple(os.path.abspath(str(x)) if k == "data_dirs" else x for x in v)
         out[k] = v
