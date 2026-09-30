@@ -35,19 +35,24 @@ response direction and magnitude — a commercially usable replacement for Non-C
 > [docs/RESULTS_REAL.md](docs/RESULTS_REAL.md)**, on two real CRISPRi screens
 > under a held-out-gene split. Two findings matter more than any single number:
 >
-> * **Best result: +0.337, from a closed-form ridge regression** over
->   STRING-graph-augmented ESM2 embeddings -- not from the conditioned head.
->   Folding a gene's interaction neighbourhood into its embedding lifts
->   everything that reads the embedding (ridge +0.072, head +0.036, k-NN +0.052)
->   and is the largest gain measured here.
-> * **The head's edge over a linear map survived only while the features were
->   impoverished.** On plain ESM2-150M it beat ridge by +0.027 (CI [+0.010,
->   +0.045], every seed); on the richer graph-augmented features, identical for
->   all methods, that becomes **-0.008** (CI [-0.017, +0.001], 1/3 seeds).
+> * **The largest gain is a feature change, not a model change: +0.337.**
+>   Folding a gene's STRING interaction neighbourhood into its embedding
+>   (`[own || mean(partners)]`) lifts everything that reads the embedding --
+>   ridge +0.072, head +0.036, k-NN +0.052 -- and `train_mean`, which does not
+>   read it, is unchanged to four decimals. Best numbers: ridge **+0.337**, head
+>   **+0.335**, against +0.265 / +0.293 on plain ESM2-150M.
+> * **The head and a closed-form ridge fit are tied on those features.** On plain
+>   ESM2-150M the head beat ridge by +0.027 (CI [+0.010, +0.045], every seed); on
+>   the richer features, identical for all methods, the paired difference is
+>   **-0.002** (CI [-0.031, +0.026], 1/3 seeds). Its earlier apparent loss at a
+>   30-epoch budget was mostly undertraining. The head is still improving when its
+>   budget ends, so this is "not yet shown", not "cannot".
 >
 > The head does clear the trivial baselines decisively, and its conditioning is
 > real (permuting target-gene identity costs -0.172 of +0.288). But the case for
-> the architecture over a ridge fit on the same features is **not established**.
+> the architecture over a ridge fit on the same features is **not established** --
+> and ridge needs no training budget at all, so the head does not make an
+> efficiency case either.
 > These are fresh measurements on reachable datasets, not a regeneration of the
 > withdrawn figures. Please do not cite figures from earlier tags.
 >
