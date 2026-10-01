@@ -1,0 +1,85 @@
+{
+  "figures": [
+    {
+      "name": "Fig. 1 (architecture)",
+      "stem": "ieee_fig_architecture",
+      "paths": [
+        "figures/ieee_fig_architecture.pdf",
+        "figures/ieee_fig_architecture.png"
+      ],
+      "width_in": 7.16,
+      "height_in": 4.15,
+      "width_mm": 181.9,
+      "height_mm": 105.4,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Serif",
+        "font_is_metric_clone_of_times": true
+      },
+      "params": {
+        "D=640": 1121809,
+        "D=1280": 1449489
+      }
+    },
+    {
+      "name": "Extended Data Fig. 1",
+      "stem": "ieee_ed_fig1_per_split",
+      "paths": [
+        "figures/ieee_ed_fig1_per_split.pdf",
+        "figures/ieee_ed_fig1_per_split.png"
+      ],
+      "width_in": 7.16,
+      "height_in": 2.75,
+      "width_mm": 181.9,
+      "height_mm": 69.8,
+      "column_class": "double",
+      "warnings": []
+    },
+    {
+      "name": "Extended Data Fig. 2",
+      "stem": "ieee_ed_fig2_ablation",
+      "paths": [
+        "figures/ieee_ed_fig2_ablation.pdf",
+        "figures/ieee_ed_fig2_ablation.png"
+      ],
+      "width_in": 7.16,
+      "height_in": 2.9,
+      "width_mm": 181.9,
+      "height_mm": 73.7,
+      "column_class": "double",
+      "warnings": []
+    },
+    {
+      "name": "Extended Data Fig. 3",
+      "stem": "ieee_ed_fig3_feature_search",
+      "paths": [
+        "figures/ieee_ed_fig3_feature_search.pdf",
+        "figures/ieee_ed_fig3_feature_search.png"
+      ],
+      "width_in": 7.16,
+      "height_in": 2.6,
+      "width_mm": 181.9,
+      "height_mm": 66.0,
+      "column_class": "double",
+      "warnings": []
+    },
+    {
+      "name": "Extended Data Fig. 4",
+      "stem": "ieee_ed_fig4_budget_external",
+      "paths": [
+        "figures/ieee_ed_fig4_budget_external.pdf",
+        "figures/ieee_ed_fig4_budget_external.png"
+      ],
+      "width_in": 7.16,
+      "height_in": 2.6,
+      "width_mm": 181.9,
+      "height_mm": 66.0,
+      "column_class": "double",
+      "warnings": []
+    }
+  ],
+  "font_note": "Times New Roman is not installed in this container. Liberation Serif is metrically identical to it; math is set in STIX, a Times-design face. Fonts are embedded as TrueType (Type 42) and text remains editable.",
+  "data_note": "Every value is read from committed results/**/*.json; architecture dimensions mirror src/maprna_p3/model_dev.py.",
+  "git": "6fc78a6"
+}
