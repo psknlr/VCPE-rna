@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / "src" / "maprna_p3"))
 
 import matplotlib.patches as mpatches                           # noqa: E402
-import ieee_style as S                                          # noqa: E402
+import ieee_diagram as S                                          # noqa: E402
 
 MAIN_RUN = "results/real_150M_graph_long/A_seeds"
 

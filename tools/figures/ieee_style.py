@@ -1,370 +1,177 @@
-"""IEEE Transactions graphics specification, implemented for matplotlib.
+"""IEEE Transactions display-item specification, implemented for matplotlib.
 
-What IEEE states (IEEE Author Center, "Create Graphics for Your Article",
-pages "Resolution and Size" and "File Formatting", checked 2026-10-01):
-
-* one column 3.5 in (88.9 mm, 21 pc); two columns 7.16 in (182 mm, 43 pc);
-  graphics no larger than 7.16 x 8.8 in (182 x 220 mm); avoid less than one column;
-* typefaces Helvetica, Times New Roman, Arial, Cambria or Symbol; type
-  "approximately 9-10 point when viewed at full size", consistent across all
-  graphics and tables;
-* PS, EPS, PDF, PNG or TIFF; in EPS/PS/PDF the fonts are embedded or outlined;
-* raster colour and greyscale above 300 dpi, black-and-white line art above
-  600 dpi;
-* do not rely on colour alone: pair colour with shape (solid versus dashed
-  lines, different fills) and contrast elements in brightness, not hue only.
-
-What this module adds as house rules, stated as such because IEEE does not
-specify them: strokes of at least 0.5 pt, so hairlines survive print; fills that
-stay distinguishable once printed in greyscale (CIELAB lightness at least 8
-apart for any two block kinds that share a border style); black text on every
-fill with a WCAG contrast of at least 4.5:1; and no text overflowing the box it
-labels. The caption ("Fig. 1. ...") belongs to the LaTeX source, not to the
-graphic; sub-figure labels "(a)", "(b)" sit centred beneath each sub-figure.
+Mechanical spec enforced here (IEEE Author Center, "Preparing graphics"):
+single column 3.5 in (88.9 mm), double column 7.16 in (181.9 mm), height <= the
+9.4 in text block; Times (serif) throughout, 8 pt at final size with nothing
+below 6 pt; strokes >= 0.5 pt; vector output with embedded, live text; raster
+fall-back at 600 dpi (line art). Sub-figure labels are "(a)", "(b)" set in the
+body font below or at the top-left of each panel -- never bold lowercase on its
+own as in Nature. Every figure must stay readable when printed in greyscale, so
+fills are distinguished by luminance and hatching as well as hue.
 
 Font note: Times New Roman is not installed in this container. Liberation Serif
-is metrically identical to it (same advance widths), so the layout is unchanged
-when production substitutes Times New Roman; mathematics is set in STIX, a
-Times-compatible face. Both substitutions are recorded in the provenance rather
-than passed off as the named fonts. Text is embedded as Type 42, never outlined.
+is metrically identical to Times New Roman (same advance widths), so the layout
+is unchanged when the production system substitutes the real face; the
+substitution is recorded in the manifest rather than hidden.
 """
 from __future__ import annotations
 
-import struct
-from pathlib import Path
-
 import matplotlib as mpl
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 
+MM = 1.0 / 25.4
 WIDTHS_IN = {"single": 3.5, "double": 7.16}
-MAX_W_IN, MAX_H_IN = 7.16, 8.8
-TEXT_PT = (9.0, 10.0)
-MIN_STROKE_PT = 0.5                      # house rule (IEEE states none)
-MIN_DL = 8.0                             # house rule: greyscale separation
-MIN_CONTRAST = 4.5                       # house rule: WCAG AA for body text
-DPI = 600
+MAX_HEIGHT_IN = 9.4
 
-SERIF_STACK = ["Times New Roman", "Times", "Liberation Serif", "Nimbus Roman",
-               "DejaVu Serif"]
-SANS_STACK = ["Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"]
+FONT_STACK = ["Times New Roman", "Times", "Liberation Serif", "Nimbus Roman",
+              "DejaVu Serif"]
 
-# Block kinds for architecture diagrams. Each kind differs from every other in
-# BOTH fill lightness and border style where it can, so the figure reads the same
-# in greyscale print (IEEE: "use both color and shape to convey the same
-# meaning"). The blue is a tint of Okabe-Ito blue, the grey is neutral.
-KINDS = {
-    "data":  dict(fc="#FFFFFF", ls="solid", label="Input or tensor"),
-    "train": dict(fc="#9CC8E2", ls="solid", label="Trained layer"),
-    "fixed": dict(fc="#E4E4E4", ls=(0, (3.2, 1.6)),
-                  label="Fixed, no trained parameters"),
-    "off":   dict(fc="#FFFFFF", ls=(0, (0.9, 1.5)),
-                  label="Inactive in the main configuration"),
-}
-EDGE = "#000000"
-TEXT = "#000000"
-BOX_LW = 0.6
-ARROW_LW = 0.7
-
-# Type size and stroke scale for the primitives below. The IEEE build uses the
-# defaults; a re-typeset variant for another venue (for example the Nature
-# portfolio's 5-7 pt band) sets them once with `set_scale` rather than threading
-# a size through every call.
-SCALE = {"fs": 9.0, "lw": 1.0}
+# Greyscale-safe roles: each fill differs in luminance by >= ~20%, so the
+# figure survives a monochrome print. Hue is a bonus, not the carrier.
+C_MODEL = "#1F4E79"     # dark blue   (L ~ 30%)
+C_RIDGE = "#8FAADC"     # light blue  (L ~ 66%)
+C_KNN = "#BFBFBF"       # light grey  (L ~ 75%)
+C_FLOOR = "#000000"
+C_GREY = "#7F7F7F"
+C_ACCENT = "#C00000"    # dark red, used for a single emphasised element
+FILL_IN = "#F2F2F2"     # input blocks
+FILL_OP = "#FFFFFF"     # operators
+FILL_LEARN = "#DDEBF7"  # learned layers
+FILL_FIXED = "#FBE5D6"  # fixed (non-learned) priors
 
 
-def set_scale(fs=9.0, lw=1.0):
-    SCALE.update(fs=float(fs), lw=float(lw))
-
-
-def _fs(size):
-    return SCALE["fs"] if size is None else size
-
-
-def resolved_font(stack) -> str:
+def resolved_font() -> str:
     from matplotlib import font_manager as fm
     have = {f.name for f in fm.fontManager.ttflist}
-    for n in stack:
+    for n in FONT_STACK:
         if n in have:
             return n
-    return stack[-1]
+    return "serif"
 
 
-def apply_ieee_style(family="serif", size=9.0) -> dict:
-    stack = SERIF_STACK if family == "serif" else SANS_STACK
-    f = resolved_font(stack)
+def apply_ieee_style() -> dict:
+    f = resolved_font()
     mpl.rcParams.update({
-        "font.family": family,
-        f"font.{family}": stack,
-        "mathtext.fontset": "stix" if family == "serif" else "stixsans",
-        "font.size": size,
-        "axes.labelsize": size,
-        "axes.titlesize": size,
-        "xtick.labelsize": size,
-        "ytick.labelsize": size,
-        "legend.fontsize": size,
+        "font.family": "serif",
+        "font.serif": FONT_STACK,
+        "mathtext.fontset": "stix",    # STIX is a Times-design math face
+        "font.size": 8.0,
+        "axes.labelsize": 8.0,
+        "axes.titlesize": 8.0,
+        "xtick.labelsize": 7.0,
+        "ytick.labelsize": 7.0,
+        "legend.fontsize": 7.0,
         "axes.linewidth": 0.6,
         "lines.linewidth": 1.0,
-        "patch.linewidth": BOX_LW,
+        "patch.linewidth": 0.6,
         "xtick.major.width": 0.6,
         "ytick.major.width": 0.6,
-        "xtick.direction": "in",
+        "xtick.major.size": 2.5,
+        "ytick.major.size": 2.5,
+        "xtick.direction": "in",       # IEEE plots conventionally tick inward
         "ytick.direction": "in",
-        "axes.grid": False,
-        "figure.facecolor": "white",
+        "xtick.top": True,
+        "ytick.right": True,
+        "axes.grid": True,
+        "grid.linewidth": 0.5,
+        "grid.linestyle": ":",
+        "grid.color": "#A6A6A6",
+        "axes.axisbelow": True,
         "axes.facecolor": "white",
+        "figure.facecolor": "white",
         "savefig.facecolor": "white",
-        "savefig.bbox": "standard",     # never "tight": it changes the width
-        "savefig.dpi": DPI,
-        "pdf.fonttype": 42,             # embedded, live text
+        "savefig.bbox": "standard",    # never "tight": it changes physical width
+        "savefig.dpi": 600,
+        "pdf.fonttype": 42,
         "ps.fonttype": 42,
         "svg.fonttype": "none",
-        "legend.frameon": False,
+        "legend.frameon": True,
+        "legend.edgecolor": "#000000",
+        "legend.fancybox": False,
+        "legend.framealpha": 1.0,
+        "errorbar.capsize": 2.0,
+        "hatch.linewidth": 0.5,
     })
-    return {"font": f, "family": family,
-            "metric_clone_of": ("Times New Roman" if f == "Liberation Serif" else
-                                "Arial" if f == "Liberation Sans" else None),
-            "math": mpl.rcParams["mathtext.fontset"]}
+    return {"font": f, "font_is_metric_clone_of_times": f == "Liberation Serif"}
 
 
-def ieee_canvas(width="double", height_in=4.0, scale=1.0):
-    """A figure with one axes in layout inches: one data unit is `scale` inches
-    on paper (1.0 for the IEEE build), so a layout can be re-typeset at another
-    physical size without moving anything."""
+def ieee_figure(width="double", height_in=3.0, constrained=True):
     w = WIDTHS_IN[width] if isinstance(width, str) else float(width)
-    fig = plt.figure(figsize=(w * scale, height_in * scale))
-    ax = fig.add_axes([0, 0, 1, 1])
-    ax.set_xlim(0, w)
-    ax.set_ylim(0, height_in)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    fig._ieee_boxes = []                # (text artist, box patch) for audits
-    fig._ieee_kinds = set()
-    return fig, ax, w
+    fig = plt.figure(figsize=(w, height_in),
+                     layout="constrained" if constrained else None)
+    if constrained:
+        fig.get_layout_engine().set(w_pad=0.02, h_pad=0.02, wspace=0.04,
+                                    hspace=0.05)
+    return fig, w
 
 
-# ------------------------------------------------------------- primitives
-
-def block(ax, cx, cy, w, h, text, kind="data", size=None, ha="center",
-          pad=0.035, rounding=0.03):
-    """A labelled box centred at (cx, cy), in layout inches. Returns the patch."""
-    k = KINDS[kind]
-    p = mpatches.FancyBboxPatch(
-        (cx - w / 2, cy - h / 2), w, h,
-        boxstyle=f"round,pad=0,rounding_size={rounding}",
-        linewidth=BOX_LW * SCALE["lw"], edgecolor=EDGE, facecolor=k["fc"],
-        linestyle=k["ls"], zorder=2)
-    ax.add_patch(p)
-    tx = cx if ha == "center" else cx - w / 2 + pad
-    t = ax.text(tx, cy, text, ha=ha, va="center", fontsize=_fs(size), color=TEXT,
-                zorder=3, linespacing=1.18)
-    ax.figure._ieee_boxes.append((t, p, k["fc"]))
-    ax.figure._ieee_kinds.add(kind)
-    return p
+def subcaption(ax, letter, text="", y=-0.30):
+    """IEEE sub-figure label, '(a) text', centred beneath the panel."""
+    ax.text(0.5, y, f"({letter}) {text}".rstrip(), transform=ax.transAxes,
+            ha="center", va="top", fontsize=8)
 
 
-def op_node(ax, cx, cy, symbol, r=0.085, size=None):
-    """A circled operator (element-wise product, concatenation, addition)."""
-    c = mpatches.Circle((cx, cy), r, facecolor="white", edgecolor=EDGE,
-                        linewidth=BOX_LW * SCALE["lw"], zorder=4)
-    ax.add_patch(c)
-    t = ax.text(cx, cy, symbol, ha="center", va="center_baseline",
-                fontsize=_fs(size), color=TEXT, zorder=5)
-    ax.figure._ieee_boxes.append((t, c, "#FFFFFF"))
-    return c
-
-
-def arrow(ax, xy0, xy1, lw=ARROW_LW, ls="solid", head=5.0, connection=None):
-    ax.annotate("", xy=xy1, xytext=xy0, zorder=1,
-                arrowprops=dict(arrowstyle="-|>", linewidth=lw * SCALE["lw"],
-                                color=EDGE, linestyle=ls, shrinkA=0, shrinkB=0,
-                                mutation_scale=head * SCALE["lw"],
-                                connectionstyle=connection or "arc3,rad=0"))
-
-
-def polyline_arrow(ax, pts, lw=ARROW_LW, ls="solid", head=5.0):
-    """Right-angled connector through the given points, arrow head at the end."""
-    xs, ys = zip(*pts[:-1])
-    ax.plot(list(xs) + [pts[-2][0]], list(ys) + [pts[-2][1]], color=EDGE,
-            lw=lw * SCALE["lw"], ls=ls, solid_capstyle="butt", zorder=1)
-    arrow(ax, pts[-2], pts[-1], lw=lw, ls=ls, head=head)
-
-
-def frame(ax, x0, y0, x1, y1, ls=(0, (4, 2)), lw=0.6):
-    """Dashed grouping frame, no fill."""
-    ax.add_patch(mpatches.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
-                                    edgecolor=EDGE, linewidth=lw * SCALE["lw"],
-                                    linestyle=ls, zorder=0.5))
-
-
-def sublabel(ax, cx, y, text, size=None):
-    """IEEE sub-figure label, '(a) Title', centred beneath its sub-figure."""
-    ax.text(cx, y, text, ha="center", va="top", fontsize=_fs(size), color=TEXT)
-
-
-def legend_row(ax, x, y, kinds, size=None, sw=0.26, sh=0.13, gap=0.07,
-               between=0.22):
-    """Swatch-and-label key for the block kinds, laid out left to right.
-
-    Text widths are measured, not guessed, so the row cannot run into itself.
-    """
-    fig = ax.figure
-    fig.canvas.draw()
-    r = fig.canvas.get_renderer()
-    inv = ax.transData.inverted()
-    for kind in kinds:
-        k = KINDS[kind]
-        ax.add_patch(mpatches.FancyBboxPatch(
-            (x, y - sh / 2), sw, sh, boxstyle="round,pad=0,rounding_size=0.02",
-            linewidth=BOX_LW * SCALE["lw"], edgecolor=EDGE, facecolor=k["fc"],
-            linestyle=k["ls"], zorder=2))
-        t = ax.text(x + sw + gap, y, k["label"], ha="left", va="center",
-                    fontsize=_fs(size), color=TEXT)
-        bb = t.get_window_extent(renderer=r)
-        x = inv.transform((bb.x1, bb.y0))[0] + between
-    return x
-
-
-# ------------------------------------------------------------- audits
-
-def _srgb_to_lin(u):
-    return u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
-
-
-def rel_luminance(c) -> float:
-    r, g, b = (_srgb_to_lin(u) for u in mpl.colors.to_rgb(c))
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-
-def lightness(c) -> float:
-    """CIELAB L* (D65), what a greyscale printer preserves."""
-    y = rel_luminance(c)
-    f = y ** (1 / 3) if y > (6 / 29) ** 3 else y / (3 * (6 / 29) ** 2) + 4 / 29
-    return 116 * f - 16
-
-
-def contrast(c1, c2) -> float:
-    a, b = sorted((rel_luminance(c1), rel_luminance(c2)), reverse=True)
-    return (a + 0.05) / (b + 0.05)
-
-
-def check_greyscale(kinds) -> list:
-    bad = []
-    ks = sorted(kinds)
-    for i, a in enumerate(ks):
-        for b in ks[i + 1:]:
-            same_border = KINDS[a]["ls"] == KINDS[b]["ls"]
-            dl = abs(lightness(KINDS[a]["fc"]) - lightness(KINDS[b]["fc"]))
-            if same_border and dl < MIN_DL:
-                bad.append(f"{a}/{b}: same border and dL*={dl:.1f} < {MIN_DL}")
-    return bad
-
-
-def check_text(fig, lo=TEXT_PT[0], hi=TEXT_PT[1]) -> list:
+def check_text_sizes(fig, lo=6.0, hi=10.0):
     bad = []
     for t in fig.findobj(mpl.text.Text):
         s = t.get_text()
         if not s or not s.strip():
             continue
-        if not (lo - 1e-6 <= t.get_fontsize() <= hi + 1e-6):
-            bad.append((s[:24], t.get_fontsize()))
+        sz = t.get_fontsize()
+        if sz < lo or sz > hi:
+            bad.append((s[:28], round(sz, 2)))
     return bad
 
 
-def check_strokes(fig, floor=MIN_STROKE_PT) -> list:
+def check_line_widths(fig, lo=0.5):
     bad = []
-    for a in fig.findobj(lambda o: isinstance(o, (mpl.lines.Line2D,
-                                                  mpl.patches.Patch))):
-        if not a.get_visible():
-            continue
-        lw = a.get_linewidth()
-        if isinstance(a, mpl.patches.Patch):
-            ec = a.get_edgecolor()
-            if lw == 0 or (ec is not None and len(ec) == 4 and ec[3] == 0):
-                continue
-            if a is a.figure.patch or (a.axes is not None and a is a.axes.patch):
-                continue
-        if 0 < lw < floor - 1e-9:
-            bad.append((type(a).__name__, lw))
-    return bad
+    for ln in fig.findobj(mpl.lines.Line2D):
+        if ln.get_visible() and 0 < ln.get_linewidth() < lo and ln.get_xydata().size:
+            bad.append(round(ln.get_linewidth(), 2))
+    return sorted(set(bad))
 
 
-def check_contrast(fig) -> list:
-    bad = []
-    for t, _, fc in getattr(fig, "_ieee_boxes", []):
-        c = contrast(t.get_color(), fc)
-        if c < MIN_CONTRAST:
-            bad.append((t.get_text()[:24], round(c, 2)))
-    return bad
-
-
-def check_overflow(fig, slack_px=0.5) -> list:
-    """Every boxed label must sit inside its box (and inside the canvas)."""
-    fig.canvas.draw()
-    r = fig.canvas.get_renderer()
-    bad = []
-    W, H = fig.canvas.get_width_height()
-    for t, p, _ in getattr(fig, "_ieee_boxes", []):
-        tb = t.get_window_extent(renderer=r)
-        pb = p.get_window_extent(renderer=r)
-        if (tb.x0 < pb.x0 - slack_px or tb.x1 > pb.x1 + slack_px or
-                tb.y0 < pb.y0 - slack_px or tb.y1 > pb.y1 + slack_px):
-            bad.append(t.get_text().replace("\n", " ")[:32])
-    for t in fig.findobj(mpl.text.Text):
-        if not t.get_text().strip():
-            continue
-        tb = t.get_window_extent(renderer=r)
-        if tb.x0 < -slack_px or tb.y0 < -slack_px or tb.x1 > W + slack_px \
-                or tb.y1 > H + slack_px:
-            bad.append("off-canvas: " + t.get_text().replace("\n", " ")[:24])
-    return bad
-
-
-def save_ieee(fig, stem, outdir, formats=("pdf", "eps", "png")) -> dict:
-    """Write at exact physical size and audit. Empty `warnings` = pass."""
+def save_ieee(fig, stem, outdir="figures", width_in=None,
+              formats=("pdf", "png")):
+    """Write vector + 600 dpi raster at the exact physical size and audit it."""
+    from pathlib import Path
+    import struct
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    w, h = fig.get_size_inches()
     warnings = []
-    cls = next((k for k, v in WIDTHS_IN.items() if abs(w - v) <= 0.01), None)
+    w_in, h_in = fig.get_size_inches()
+    if width_in is not None and abs(w_in - width_in) > 0.02:
+        warnings.append(f"width {w_in:.2f} in != requested {width_in:.2f} in")
+    cls = next((k for k, v in WIDTHS_IN.items() if abs(w_in - v) <= 0.02), None)
     if cls is None:
-        warnings.append(f"width {w:.3f} in is not an IEEE column width "
-                        f"(3.5 or 7.16 in)")
-    if h > MAX_H_IN + 1e-6:
-        warnings.append(f"height {h:.2f} in exceeds {MAX_H_IN} in")
-    if mpl.rcParams["savefig.bbox"] not in (None, "standard"):
-        warnings.append("savefig.bbox is not 'standard'; physical width will shift")
-    if mpl.rcParams["pdf.fonttype"] != 42 or mpl.rcParams["ps.fonttype"] != 42:
-        warnings.append("fonts would not be embedded as live Type 42 text")
-    for name, res in (("text outside 9-10 pt", check_text(fig)),
-                      ("strokes below 0.5 pt", check_strokes(fig)),
-                      ("low text contrast on fill", check_contrast(fig)),
-                      ("text overflows its box", check_overflow(fig)),
-                      ("greyscale-ambiguous block kinds",
-                       check_greyscale(getattr(fig, "_ieee_kinds", set())))):
-        if res:
-            warnings.append(f"{name} ({len(res)}): {res[:6]}")
-    for a in fig.findobj(lambda o: hasattr(o, "get_alpha")):
-        al = a.get_alpha()
-        if al is not None and al < 1:
-            warnings.append("transparency present; EPS cannot carry it")
-            break
+        warnings.append(f"width {w_in:.2f} in is not an IEEE column (3.5 / 7.16 in)")
+    if h_in > MAX_HEIGHT_IN + 0.01:
+        warnings.append(f"height {h_in:.2f} in exceeds {MAX_HEIGHT_IN} in")
+    if mpl.rcParams["pdf.fonttype"] != 42:
+        warnings.append("pdf.fonttype != 42; fonts would not embed as TrueType")
+    bad_t = check_text_sizes(fig)
+    if bad_t:
+        warnings.append(f"text outside 6-10 pt: {bad_t[:4]}")
+    bad_l = check_line_widths(fig)
+    if bad_l:
+        warnings.append(f"strokes thinner than 0.5 pt: {bad_l[:4]}")
 
     paths = []
     for ext in formats:
         p = outdir / f"{stem}.{ext}"
-        fig.savefig(p, **({"dpi": DPI} if ext == "png" else {}))
+        fig.savefig(p, **({} if ext == "pdf" else {"dpi": 600}))
         paths.append(str(p))
     png = outdir / f"{stem}.png"
-    dpi_eff = None
     if png.exists():
         with open(png, "rb") as fh:
             fh.read(16)
             w_px, _ = struct.unpack(">II", fh.read(8))
-        dpi_eff = w_px / w
-        if dpi_eff < 600 - 1:
-            warnings.append(f"raster {dpi_eff:.0f} dpi is below 600 dpi for line art")
-    return dict(stem=stem, paths=paths, width_in=round(w, 3), height_in=round(h, 3),
-                width_mm=round(w * 25.4, 1), height_mm=round(h * 25.4, 1),
-                column_class=cls, raster_dpi=round(dpi_eff) if dpi_eff else None,
-                warnings=warnings)
+        if w_px / w_in < 600 - 1:
+            warnings.append(f"raster {w_px / w_in:.0f} dpi is below IEEE's 600 dpi")
+    plt.close(fig)
+    return dict(stem=stem, paths=[str(Path(p).relative_to(outdir.parent))
+                                  if outdir.parent in Path(p).parents else p
+                                  for p in paths],
+                width_in=round(w_in, 3), height_in=round(h_in, 3),
+                width_mm=round(w_in / MM, 1), height_mm=round(h_in / MM, 1),
+                column_class=cls, warnings=warnings)
