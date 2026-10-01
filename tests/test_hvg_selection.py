@@ -16,6 +16,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "maprna_p1"))
 
+# ds_knockdown defines a torch Dataset, so it cannot be imported in the torch-free
+# `metrics` CI job; this module runs in the `pipeline` job, which has torch.
+pytest.importorskip("torch")
 from ds_knockdown import make_hvg_list  # noqa: E402
 
 

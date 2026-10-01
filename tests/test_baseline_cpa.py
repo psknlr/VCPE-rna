@@ -94,6 +94,9 @@ def test_a_stage_is_required():
 
 def test_export_refuses_more_than_one_dataset():
     """CPA is set up per AnnData; a multi-dataset VCPE run has no counterpart."""
+    # the export stage imports train_p3, so the script needs torch to reach the
+    # check; this runs in the `pipeline` CI job, which has it
+    pytest.importorskip("torch")
     p = subprocess.run(
         [sys.executable, str(SCRIPT), "export", "--work", "/tmp/nonexistent_cpa",
          "--data_dirs", "a.h5ad", "b.h5ad", "--esm_table", "x.pt"],

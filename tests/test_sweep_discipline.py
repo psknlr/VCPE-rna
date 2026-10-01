@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "sweep_graph_features.py"
 
@@ -67,6 +69,9 @@ def test_it_labels_its_winner_a_candidate_not_a_result():
 
 
 def test_the_help_text_states_the_discipline():
+    # the script imports torch at module level, so even --help needs it; this
+    # runs in the `pipeline` CI job, which has torch
+    pytest.importorskip("torch")
     p = subprocess.run([sys.executable, str(SCRIPT), "--help"],
                        capture_output=True, text=True, timeout=120)
     assert p.returncode == 0
