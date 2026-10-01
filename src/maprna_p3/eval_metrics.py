@@ -58,6 +58,23 @@ def per_item_correlation(true_mat, pred_mat, mask=None, min_features=10):
     return float(np.mean(rs)) if rs else float("nan")
 
 
+def _topk_inclusion(v, k):
+    """P(feature is among the top k by |v|) under uniformly random tie-breaking.
+
+    1 for values strictly above the k-th largest |v|, 0 below it, and an equal
+    share of the slots left over for the values tied with it. Without ties this
+    is exactly the indicator of the usual top-k set.
+    """
+    a = np.abs(np.asarray(v, dtype=np.float64))
+    n = a.size
+    thr = np.partition(a, n - k)[n - k]
+    above = a > thr
+    tied = a == thr
+    p = above.astype(np.float64)
+    p[tied] = (k - above.sum()) / tied.sum()
+    return p
+
+
 def top_k_overlap(true_mat, pred_mat, k=50, mask=None, min_ratio=2):
     """Mean overlap of the top-k largest-|value| features, per item.
 
@@ -67,6 +84,30 @@ def top_k_overlap(true_mat, pred_mat, k=50, mask=None, min_ratio=2):
     requires at least that many measured features per selected one. This matters
     because the measured-column mask can shrink an item's feature count well
     below the nominal panel size.
+
+    Ties are scored by their expectation under random tie-breaking (ERRATA E16).
+    The previous `argsort` form broke ties by column position, so a prediction
+    with no ranking at all -- "predict no change", every value 0 -- selected the
+    first k columns of the panel. The panel is sorted by variance, so those are
+    the genes most likely to respond, and the constant predictor scored 0.387 on
+    the main benchmark, above the conditioned model and nearly four times the
+    chance level k/n. A constant prediction now scores exactly k/n.
+    """
+    outs = []
+    for x, y in _rows(true_mat, pred_mat, mask):
+        if x.size < max(2, k * min_ratio):
+            continue
+        kk = min(k, x.size)
+        outs.append(float((_topk_inclusion(x, kk) * _topk_inclusion(y, kk)).sum()
+                          / kk))
+    return float(np.mean(outs)) if outs else float("nan")
+
+
+def top_k_overlap_index_ties(true_mat, pred_mat, k=50, mask=None, min_ratio=2):
+    """The pre-E16 top-k overlap, ties broken by column position.
+
+    Kept only so the defect can be reproduced and measured; never use it to
+    report a result.
     """
     outs = []
     for x, y in _rows(true_mat, pred_mat, mask):

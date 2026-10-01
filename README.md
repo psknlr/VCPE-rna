@@ -41,10 +41,13 @@ response direction and magnitude — a commercially usable replacement for Non-C
 >   ridge +0.072, head +0.036, k-NN +0.052 -- and `train_mean`, which does not
 >   read it, is unchanged to four decimals. Best numbers: ridge **+0.337**, head
 >   **+0.335**, against +0.265 / +0.293 on plain ESM2-150M.
-> * **The head and a closed-form ridge fit are tied on those features.** On plain
->   ESM2-150M the head beat ridge by +0.027 (CI [+0.010, +0.045], every seed); on
->   the richer features, identical for all methods, the paired difference is
->   **-0.002** (CI [-0.031, +0.026], 1/3 seeds). Its earlier apparent loss at a
+> * **The head is not significantly better than a closed-form ridge fit on either
+>   representation.** On plain ESM2-150M it led ridge on all three splits by
+>   +0.027, but the 95% t interval is [-0.011, +0.066] (paired t P = 0.09); on the
+>   richer features, identical for all methods, the paired difference is
+>   **-0.002** ([-0.065, +0.060], P = 0.88, 1/3 splits). (Intervals corrected for
+>   three splits, ERRATA E19; they were previously quoted with 1.96 in place of
+>   t(0.975, 2) = 4.30.) Its earlier apparent loss at a
 >   30-epoch budget was mostly undertraining. The head is still improving when its
 >   budget ends, so this is "not yet shown", not "cannot".
 >
@@ -88,7 +91,8 @@ response direction and magnitude — a commercially usable replacement for Non-C
   negative Spearman). ASO potency on **unseen target genes**: top-5% enrichment
   ≈ 0.98× random — present in the committed logs since v1 and, until now, not
   mentioned here.
-- **Cheap and reproducible core.** The response head is 5.7M parameters and
+- **Cheap and reproducible core.** The response head has 1.0-1.5M parameters in
+  the configurations reported here (5.7M in the original 5,120-d design, ERRATA E18) and
   trains in ~80 s on one GPU with no dependency on the MAP/SE backbone.
 
 ## Status of each result

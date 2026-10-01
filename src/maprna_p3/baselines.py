@@ -5,7 +5,7 @@ Motivation
 Before the v4 audit this repository computed exactly one baseline for the
 response line -- "predict no change" -- and quoted every external model (GEARS,
 scGPT, CPA, AIDO.RNA-Pert) from its paper without running it. That leaves the
-central question unanswered: does a 5.7M-parameter conditioned head do anything
+central question unanswered: does a ~1M-parameter conditioned head do anything
 that a retrieval rule over the same frozen ESM2 embeddings does not?
 
 This module supplies the controls that answer it. They are deliberately the

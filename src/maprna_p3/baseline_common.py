@@ -107,9 +107,10 @@ UNCONTROLLED_FACTORS = [
     "defaults, while VCPE's hyperparameters were chosen against this data over "
     "many runs. That asymmetry favours VCPE and no protocol alignment removes it; "
     "the honest fix is an equal tuning budget for both.",
-    "Capacity is not equalised: the external models are generally far larger than "
-    "the 5.7M-parameter VCPE head. If VCPE wins it wins as the smaller model; if "
-    "it loses, the size difference is an explanation rather than an excuse.",
+    "Capacity is not equalised: the external model and the VCPE head (about "
+    "1.0-1.5M parameters in the configurations reported here, ERRATA E18) differ "
+    "in size, and the difference is not controlled. A size difference can explain "
+    "a gap; it does not excuse one.",
     "Each external model keeps its own preprocessing (its own graph, its own "
     "highly-variable-gene or DE selection). Disabling that would not be a "
     "comparison against the published method.",

@@ -48,6 +48,7 @@ C_BASE = OKABE_ITO["grey"]
 C_ACCENT = OKABE_ITO["vermillion"]
 C_ALT = OKABE_ITO["orange"]
 C_FLOOR = OKABE_ITO["black"]
+C_TEXT = OKABE_ITO["black"]     # all text is black: the guide forbids coloured text
 
 FONT_STACK = ["Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"]
 
@@ -74,7 +75,7 @@ def apply_nature_style() -> dict:
         "legend.fontsize": 6.0,
         "figure.titlesize": 7.0,
         "axes.linewidth": 0.8,         # within 0.25-1 pt
-        "lines.linewidth": 1.1,
+        "lines.linewidth": 1.0,       # QC rule: data strokes no heavier than 1 pt
         "patch.linewidth": 0.6,
         "xtick.major.width": 0.8,
         "ytick.major.width": 0.8,
@@ -97,6 +98,17 @@ def apply_nature_style() -> dict:
         "svg.fonttype": "none",
         "legend.frameon": False,
         "errorbar.capsize": 1.4,
+        # Math ($r$, $P$, $k/n$) in the same face as the text. The default
+        # 'dejavusans' set the italic r in DejaVu Sans -- a second sans-serif
+        # face in every figure, against "the same font throughout". Glyphs the
+        # text face lacks (operators, blackboard letters) fall back to STIX.
+        "mathtext.fontset": "custom",
+        "mathtext.rm": f,
+        "mathtext.it": f"{f}:italic",
+        "mathtext.bf": f"{f}:bold",
+        "mathtext.sf": f,
+        "mathtext.cal": f"{f}:italic",   # default 'cursive' resolves to DejaVu
+        "mathtext.fallback": "stixsans",
     })
     return {"font": f, "font_is_metric_clone_of_arial": f == "Liberation Sans"}
 
@@ -135,6 +147,32 @@ def check_text_sizes(fig, lo=5.0, hi=8.0):
     return bad
 
 
+def _lin(u):
+    return u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
+
+
+def _contrast_on_white(c):
+    r, g, b = (_lin(u) for u in mpl.colors.to_rgb(c))
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return 1.05 / (y + 0.05)
+
+
+def check_text_colours(fig, min_contrast=4.5):
+    """The figure guide forbids coloured text. Flag any text that is chromatic,
+    or grey enough to fall below a 4.5:1 contrast on white."""
+    bad = []
+    for t in fig.findobj(mpl.text.Text):
+        s = t.get_text()
+        if not s or not s.strip():
+            continue
+        r, g, b = mpl.colors.to_rgb(t.get_color())
+        if max(r, g, b) - min(r, g, b) > 0.02:
+            bad.append((s[:24], "coloured"))
+        elif _contrast_on_white((r, g, b)) < min_contrast:
+            bad.append((s[:24], "low contrast"))
+    return bad
+
+
 def save_nature(fig, stem, outdir="figures", width_mm=None, formats=("pdf", "png")):
     """Write vector + raster at the exact physical size and audit the result."""
     outdir = Path(outdir)
@@ -160,13 +198,25 @@ def save_nature(fig, stem, outdir="figures", width_mm=None, formats=("pdf", "png
     oversize = check_text_sizes(fig)
     if oversize:
         warnings.append(f"text outside the 5-8 pt band: {oversize[:4]}")
+    coloured = check_text_colours(fig)
+    if coloured:
+        warnings.append(f"coloured or low-contrast text ({len(coloured)}), which "
+                        f"the guide forbids: {coloured[:4]}")
 
     paths = []
     for ext in formats:
         p = outdir / f"{stem}.{ext}"
         dpi = 600 if ext != "pdf" else None
         fig.savefig(p, **({"dpi": dpi} if dpi else {}))
+        if ext == "png":
+            # Nature asks for RGB; matplotlib writes RGBA
+            from PIL import Image
+            with Image.open(p) as im:
+                im.convert("RGB").save(p, dpi=(600, 600))
         paths.append(str(p))
+    pdf = outdir / f"{stem}.pdf"
+    if pdf.exists():
+        warnings += audit_pdf(pdf)
     png = outdir / f"{stem}.png"
     if png.exists():
         import struct
@@ -181,6 +231,49 @@ def save_nature(fig, stem, outdir="figures", width_mm=None, formats=("pdf", "png
     return dict(stem=stem, paths=paths, width_mm=round(w_mm, 2),
                 height_mm=round(h_mm, 2), column_class=matched,
                 warnings=warnings)
+
+
+def audit_pdf(path, family=None, lo_pt=4.85, stroke=(0.25, 1.0)):
+    """Check the saved PDF itself, independently of the matplotlib objects.
+
+    * every text font is the figure face (Arial or its metric clone), STIX being
+      allowed only as the math fallback for glyphs the face lacks;
+    * the smallest set size is not below ~5 pt -- this is where sub- and
+      superscripts show up, which a check of Text objects cannot see (a mathtext
+      script is set at 0.7 of its base, so a 6 pt label carries 4.2 pt scripts);
+    * stroke widths stay within 0.25-1 pt.
+    """
+    import re
+    import zlib
+    family = family or resolved_font()
+    stem = family.replace(" ", "")
+    b = Path(path).read_bytes()
+    fonts = {x.decode().split("+")[-1]
+             for x in re.findall(rb"/BaseFont\s*/([A-Za-z0-9+\-_]+)", b)}
+    bad_fonts = sorted(f for f in fonts
+                       if not (f.startswith(stem) or f.startswith("STIX")))
+    sizes, widths = set(), []
+    for m in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", b, re.S):
+        try:
+            st = zlib.decompress(m.group(1))
+        except Exception:
+            continue
+        sizes |= {float(x) for x in re.findall(rb"/F\d+\s+([\d.]+)\s+Tf", st)}
+        widths += [float(x) for x in re.findall(rb"(?<![\w.])([\d.]+)\s+w\b", st)
+                   if float(x) > 0]
+    out = []
+    if bad_fonts:
+        out.append(f"PDF uses fonts other than {family} (+ STIX math): {bad_fonts}")
+    if re.search(rb"/Subtype\s*/Type3", b):
+        out.append("PDF contains Type 3 (outlined/bitmap) fonts")
+    small = sorted(x for x in sizes if x < lo_pt)
+    if small:
+        out.append(f"PDF sets text at {small} pt, below the 5 pt floor "
+                   f"(usually sub/superscripts)")
+    if widths and (min(widths) < stroke[0] - 1e-6 or max(widths) > stroke[1] + 1e-6):
+        out.append(f"PDF strokes span {min(widths):.2f}-{max(widths):.2f} pt, "
+                   f"outside {stroke[0]}-{stroke[1]} pt")
+    return out
 
 
 def git_rev():

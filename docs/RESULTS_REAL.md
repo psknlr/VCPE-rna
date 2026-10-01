@@ -28,7 +28,12 @@ Two real CRISPRi screens, the kind of knockdown this model claims to predict:
 - **Estimator:** mean over perturbations of the within-perturbation correlation
   (never the pooled one; ERRATA E4).
 - **Selection:** epoch chosen on an inner validation split; the held-out set is
-  scored once (ERRATA E3).
+  scored once (ERRATA E3). **In every run below the inner-validation items were
+  also in the training batches (ERRATA E17)**, so the selected epoch tracks
+  training fit rather than generalisation. The held-out numbers are still
+  single-shot and the head and controls were fit on the same items, so the
+  comparisons stand; what the selected epoch cannot carry is any statement about
+  convergence. The code now holds the slice out; these runs predate that.
 - **Embedding table:** the run is reported under both ESM2-35M and ESM2-150M
   (built by `tools/build_esm2_gene_table.py`). The choice is not neutral and the
   result depends on it -- see the two Table A sections and the correction near the
@@ -36,6 +41,30 @@ Two real CRISPRi screens, the kind of knockdown this model claims to predict:
   prediction.
 - **Seeds:** 3, each varying both initialisation and the split, so the intervals
   answer "does this survive a different choice of held-out genes".
+
+> **Correction to every interval below (ERRATA E19).** The CI95 columns in
+> this document were computed as mean +/- 1.96 se across three splits; the
+> correct 95% multiplier with 2 degrees of freedom is 4.30. The tables are kept
+> as they were written, so the history is visible; these are the intervals to
+> quote:
+>
+> | configuration | head vs | mean paired diff | 95% t interval | paired t P | splits won |
+> |---|---|---|---|---|---|
+> | ESM2-35M | ridge | +0.0051 | [-0.0407, +0.0509] | 0.678 | 2/3 |
+> | ESM2-35M | k-NN | +0.0272 | [-0.0513, +0.1058] | 0.275 | 2/3 |
+> | ESM2-150M | ridge | +0.0274 | [-0.0108, +0.0657] | 0.091 | 3/3 |
+> | ESM2-150M | k-NN | +0.0812 | [+0.0361, +0.1264] | 0.016 | 3/3 |
+> | + STRING indicator | ridge | +0.0279 | [-0.0105, +0.0663] | 0.089 | 3/3 |
+> | + STRING indicator | k-NN | +0.0817 | [+0.0360, +0.1275] | 0.017 | 3/3 |
+> | + STRING graph, 30 ep | ridge | -0.0079 | [-0.0277, +0.0119] | 0.230 | 1/3 |
+> | + STRING graph, 30 ep | k-NN | +0.0654 | [+0.0049, +0.1258] | 0.043 | 3/3 |
+> | + STRING graph, 80 ep | ridge | -0.0024 | [-0.0648, +0.0600] | 0.885 | 1/3 |
+> | + STRING graph, 80 ep | k-NN | +0.0709 | [+0.0002, +0.1416] | 0.050 | 3/3 |
+>
+> In words: **the head never has a significant advantage over ridge** -- on
+> plain ESM2-150M it led on all three splits by +0.027 but P = 0.09 -- while its
+> margin over k-NN on the 150M representations does exclude zero. Statements
+> below that rely on the 150M ridge interval excluding zero are marked.
 
 Exact commands: [REPRODUCE.md](REPRODUCE.md) §2. Regenerate with
 `results/real_35M/` provenance sidecars.
@@ -88,7 +117,8 @@ The same run under ESM2-150M (640-dim, vs 35M's 480-dim), which is closer to the
 after I predicted it would not.** On the weaker 35M embedding the model ties the
 linear and retrieval baselines (paired CIs include zero). On the stronger 150M
 embedding it beats both on every seed, with paired CIs that exclude zero -- a
-real, if modest, advantage (+0.027 over ridge, +0.081 over k-NN).
+real, if modest, advantage (+0.027 over ridge, +0.081 over k-NN). [E19: with
+t intervals only the k-NN margin excludes zero; over ridge, P = 0.09.]
 
 1. **It clears `zero` and `train_mean` on every seed, by a wide and
    split-stable margin.** This matters, and it is the thing the withdrawn P2
@@ -102,7 +132,9 @@ real, if modest, advantage (+0.027 over ridge, +0.081 over k-NN).
 2. **Against the strong baselines the result depends on the embedding.** On 35M
    it is a tie: paired CI against `ridge_esm2` is [-0.016, +0.026], centred on
    zero, 2/3 seeds. On 150M the model beats `ridge_esm2` on every seed, paired CI
-   [+0.010, +0.045] excluding zero, and `knn_esm2` by more, [+0.061, +0.102]. So
+   [+0.010, +0.045] excluding zero, and `knn_esm2` by more, [+0.061, +0.102].
+   [E19: those are 1.96-based; the t intervals are [-0.011, +0.066] (P = 0.09)
+   and [+0.036, +0.126] (P = 0.016). The ridge margin is not significant.] So
    the conditioning architecture does buy something over a linear map on the same
    features -- but the margin is small (+0.027 pearson over a ridge fit that takes
    seconds) and vanishes into noise on a weaker embedding. "Beats a ridge baseline
@@ -311,8 +343,11 @@ the dense one works.
 | head vs knn_esm2 | +0.0654 | [+0.0378, +0.0929] | beats, every seed |
 
 For reference, on the plain table the head beat ridge +0.0274, CI [+0.010,
-+0.045], every seed. So the head's edge over a linear map existed only while the
-features were **impoverished**: its non-linearity was substituting for
++0.045], every seed. [E19: the t interval is [-0.011, +0.066], P = 0.09 -- the
+edge was consistent but never significant, so "existed only while impoverished"
+below overstates it; "was never established" is the defensible form.] So the
+head's edge over a linear map existed only while the features were
+**impoverished**: its non-linearity was substituting for
 information the representation lacked, and once that information is present in a
 form a linear model can use, the linear model uses it better.
 
@@ -346,9 +381,11 @@ its variance has collapsed by 20x. **The honest verdict on the graph features is
 tie, not a loss.**
 
 **But the head has not converged, and that has to be said rather than left for a
-reader to notice.** Inner-validation selection picks epochs 78, 77 and 78 out of
-80 -- the model is still improving when the budget ends. Its trajectory is +0.3291
-at 30 epochs, +0.3346 at 80, still climbing. So this comparison does **not**
+reader to notice.** Its held-out mean is +0.3291 at 30 epochs and +0.3346 at 80,
+still climbing. (An earlier version of this paragraph also cited the selected
+epochs -- 78, 77 and 78 of 80 -- as evidence. That inference was void: the
+inner-validation slice was being trained on, so selection follows training fit
+and would sit at the end of any budget. ERRATA E17.) So this comparison does **not**
 establish that the head cannot beat ridge; it establishes that it has not yet,
 within a budget it is still exhausting.
 
@@ -368,9 +405,9 @@ comparison. It answered its question, and then turned up something more useful
 than its own result.
 
 **The answer: the head does not converge, even at 5x the original budget.** On
-seed 0, inner-validation selection picks epoch **150 of 150** -- still improving
-when the run ends -- along the trajectory +0.2944 (30 ep) -> +0.3361 (80 ep) ->
-+0.3497 (150 ep).
+seed 0 the held-out score still rises along +0.2944 (30 ep) -> +0.3361 (80 ep) ->
++0.3497 (150 ep). (Selection picked epoch 150 of 150, but that is not evidence of
+anything: the selection slice was trained on, ERRATA E17.)
 
 **And the trap the probe fell into, which matters more.** That +0.3497 sits
 against ridge's +0.3096 on the same split: a +0.040 margin, and it would be easy
@@ -394,7 +431,8 @@ real, and it is only visible because the per-seed values were checked rather tha
 the mean alone.
 
 So the paired verdict stands exactly where it was measured, at 80 epochs across
-three splits: **a tie**, -0.0024, CI [-0.0308, +0.0260], head winning 1 of 3. What
+three splits: **a tie**, -0.0024, CI [-0.0308, +0.0260] (t interval
+[-0.0648, +0.0600], P = 0.88; ERRATA E19), head winning 1 of 3. What
 would settle it is 150 epochs x 3 seeds, which this container could not sustain.
 No claim in this document rests on the probe.
 

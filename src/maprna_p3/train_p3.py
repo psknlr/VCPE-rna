@@ -88,8 +88,32 @@ def parse_args():
                         "by variance across every perturbation including the held-out "
                         "ones -- feature selection with the test split visible "
                         "(docs/ERRATA.md E15). Kept so that effect can be measured.")
+    p.add_argument("--inner_val_in_training", action="store_true", default=False,
+                   help="reproduce the behaviour of every run before ERRATA E17, in "
+                        "which the inner-validation items were ALSO in the training "
+                        "batches, so epoch selection measured fit to trained items "
+                        "rather than generalisation. Default: they are held out of "
+                        "training, and the controls are fit on the same items the "
+                        "head trains on.")
     p.add_argument("--d_model", type=int, default=256)
     return p.parse_args()
+
+
+def training_indices(data, inner_val_in_training=False):
+    """Indices into the training items that the head is fit on (and the controls).
+
+    The inner-validation slice selects the epoch, so it must not also be trained
+    on: a slice the model has fit says how well it memorised, not how well it
+    generalises, and selection on it drifts to the end of whatever budget is set
+    (ERRATA E17). `inner_val_in_training=True` restores the old behaviour only to
+    reproduce committed numbers.
+    """
+    n = len(data["train_items"])
+    if inner_val_in_training:
+        return np.arange(n)
+    idx = np.flatnonzero(~np.asarray(data["is_inner_val"], dtype=bool))
+    assert 0 < len(idx) < n, "inner-validation split is empty or covers everything"
+    return idx
 
 
 # ---------------- data ----------------
@@ -428,8 +452,8 @@ def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
             else:
                 prs.append(0.0)
             if len(t) >= 2 * k:
-                tops.append(len(set(np.argsort(-np.abs(t))[:k])
-                                & set(np.argsort(-np.abs(p))[:k])) / k)
+                # the shared, tie-aware definition (ERRATA E16), not a local copy
+                tops.append(top_k_overlap(t[None, :], p[None, :], k=k))
         if not prs:
             return float("nan"), float("nan"), 0
         top = float(np.mean(tops)) if tops else float("nan")
@@ -530,11 +554,16 @@ def main():
               f"confused", flush=True)
     best_pd, best_epoch = -float('inf'), -1
     ckpt_path = os.path.join(args.out_dir, 'ckpt_p3_best_dev.pt')
-    n = len(rows_tr)
+    fit_idx = training_indices(data, args.inner_val_in_training)
+    fit_idx_t = torch.from_numpy(fit_idx)
+    n = len(fit_idx)
+    print(f"[split] head trained on {n} of {len(rows_tr)} training items "
+          f"({'inner-val INCLUDED, legacy E17 behaviour' if args.inner_val_in_training else 'inner-val held out'})",
+          flush=True)
     for epoch in range(args.epochs):
         model.train()
         t0, run = time.time(), []
-        perm = torch.randperm(n)
+        perm = fit_idx_t[torch.randperm(n)]
         for lo in range(0, n, args.batch_size):
             idx = perm[lo:lo + args.batch_size]
             pred = model(rows_tr[idx], ds_tr[idx], cf_tr[idx],
@@ -621,6 +650,8 @@ def main():
     final["selected_epoch"] = best_epoch
     final["inner_val_pearson_dev_at_selection"] = float(best_pd)
     final["split_by"] = args.split_by
+    final["inner_val_in_training"] = bool(args.inner_val_in_training)
+    final["n_items_fit"] = int(n)
 
     # ---- control baselines on the same split, same mask, same metrics ----
     # Without these there is no evidence that the learned head does more than
@@ -657,10 +688,15 @@ def main():
     which = ["zero", "train_mean", "knn_esm2", "ridge_esm2"]
     if is_nb_te is not None:
         which.append("neighbor_prior")
+    # The controls are fit on exactly the items the head was trained on, so a
+    # difference between them is not a difference in training data.
     base_preds = run_all(
-        data["dev_tr"], esm_np[data["rows_tr"]], esm_np[data["rows_te"]],
-        mask_tr=(data["mask_tr"] if args.use_mask else None), knn_k=args.knn_k,
-        which=which, is_nb_tr=is_nb_tr, is_nb_te=is_nb_te)
+        data["dev_tr"][fit_idx], esm_np[data["rows_tr"][fit_idx]],
+        esm_np[data["rows_te"]],
+        mask_tr=(data["mask_tr"][fit_idx] if args.use_mask else None),
+        knn_k=args.knn_k, which=which,
+        is_nb_tr=None if is_nb_tr is None else is_nb_tr[fit_idx],
+        is_nb_te=is_nb_te)
     mask_te = data["mask_te"] if args.use_mask else np.ones_like(data["mask_te"])
     dev_te = data["dev_te"]
     final["baselines"] = {}

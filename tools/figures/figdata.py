@@ -102,10 +102,30 @@ def bar_series(summary, names=("zero", "train_mean", "knn_esm2", "ridge_esm2")):
 
 
 def paired(summary, name):
+    """Paired head-minus-control difference, interval recomputed from the splits.
+
+    The committed summaries stored mean +/- 1.96 se, which with three splits is
+    a 95% interval only in name (ERRATA E19). The interval is recomputed here
+    from the per-split differences with the t quantile, and the stored mean is
+    checked against them so a figure cannot silently mix two sources.
+    """
+    import numpy as np
+    from scipy import stats
     p = summary["paired"].get(name, {})
-    ci = p.get("ci95_mean_difference") or [None, None]
-    return dict(diff=p.get("mean_difference"), lo=ci[0], hi=ci[1],
-                verdict=p.get("verdict"), per_seed=p.get("per_seed"))
+    d = np.asarray(p.get("per_seed") or [], dtype=float)
+    if d.size < 2:
+        return dict(diff=p.get("mean_difference"), lo=None, hi=None, p=None,
+                    n=int(d.size), verdict=p.get("verdict"),
+                    per_seed=p.get("per_seed"))
+    m = float(d.mean())
+    assert abs(m - p["mean_difference"]) < 1e-12, (name, m, p["mean_difference"])
+    se = float(d.std(ddof=1)) / np.sqrt(d.size)
+    hw = float(stats.t.ppf(0.975, d.size - 1)) * se
+    pv = float(2 * stats.t.sf(abs(m / se), d.size - 1)) if se > 0 else None
+    return dict(diff=m, lo=m - hw, hi=m + hw, p=pv, n=int(d.size),
+                wins=int((d > 0).sum()), verdict=p.get("verdict"),
+                per_seed=[float(x) for x in d],
+                stored_normal_ci=p.get("ci95_mean_difference"))
 
 
 def ablation_rows(abl):
@@ -129,3 +149,54 @@ def pretty(name):
         "is_nb_off": "is-neighbour off", "is_nb_shuffle": "is-neighbour permuted",
         "ds_shuffle": "Dataset embedding permuted", "all_off": "All conditioning off",
     }.get(name, name)
+
+
+# ------------------------------------------------- Extended Data loaders
+
+#: The five configurations run under the corrected protocol, in the order the
+#: paper introduces them. Each is (key, label, results directory, epochs).
+CONFIGS = [
+    ("plain_35M", "ESM2-35M", "results/real_35M/A_seeds", 30),
+    ("plain_150M", "ESM2-150M", "results/real_150M/A_seeds", 30),
+    ("string_channel", "+ STRING indicator", "results/real_150M_string/A_seeds", 30),
+    ("graph_30ep", "+ STRING graph, 30 ep", "results/real_150M_graph/A_seeds", 30),
+    ("graph_80ep", "+ STRING graph, 80 ep", "results/real_150M_graph_long/A_seeds", 80),
+]
+
+
+def train_log(rel):
+    """Per-epoch records of the LAST run in a train_log.jsonl, plus its final record.
+
+    Two kinds of boundary are honoured. Newer logs carry an explicit `run_start`
+    record; older ones were simply appended to, so a killed run that was resumed
+    reads 1..74 then 1..80 with nothing between. Both are split, and the last
+    segment is returned, which is the run whose checkpoint was scored.
+    """
+    recs = [json.loads(l) for l in open(ROOT / rel) if l.strip()]
+    starts = [i for i, r in enumerate(recs) if "run_start" in r]
+    if starts:
+        recs = recs[starts[-1] + 1:]
+    epochs, final, seg = [], None, []
+    for r in recs:
+        if "epoch" in r:
+            if seg and r["epoch"] <= seg[-1]["epoch"]:
+                seg = []                       # epoch numbering restarted
+            seg.append(r)
+        elif "final" in r:
+            final = r["final"]
+    epochs = seg
+    n = [r["epoch"] for r in epochs]
+    assert n == list(range(1, len(n) + 1)), f"{rel}: epochs not contiguous"
+    return dict(source=rel, epochs=epochs, final=final)
+
+
+def collect_ed():
+    d = collect()
+    d["configs"] = CONFIGS
+    d["reports"] = {k: _seed_reports(path) for k, _, path, _ in CONFIGS}
+    d["logs"] = {k: {s: train_log(f"{path}/seed{s}/train_log.jsonl")
+                     for s in (0, 1, 2)} for k, _, path, _ in CONFIGS}
+    d["log_probe150"] = train_log("results/real_150M_graph_probe/seed0/train_log.jsonl")
+    d["sim"] = _load("results/simulation/protocol_traps.json")
+    d["d_head"] = _load("results/real_35M/D_head/final_report.json")
+    return d

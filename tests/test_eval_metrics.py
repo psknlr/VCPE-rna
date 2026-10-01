@@ -89,3 +89,37 @@ def test_top_k_overlap_is_zero_for_disjoint_extremes():
     true[0, :10] = 10.0                                     # extremes at the front
     pred[0, -10:] = 10.0                                    # extremes at the back
     assert top_k_overlap(true, pred, k=10) == 0.0
+
+
+def test_top_k_overlap_of_a_constant_prediction_is_chance():
+    """ERRATA E16: a prediction with no ranking must score k/n, not whatever the
+    column order happens to favour."""
+    from eval_metrics import top_k_overlap_index_ties
+    rng = np.random.default_rng(3)
+    n, k = 500, 50
+    # columns sorted by variance, as make_hvg_list orders the panel
+    sd = np.sort(rng.gamma(1.0, 1.0, size=n))[::-1]
+    true = rng.normal(size=(200, n)) * sd
+    const = np.zeros_like(true)
+    assert top_k_overlap(true, const, k=k) == pytest.approx(k / n)
+    # the old index-order tie-break rewards the variance-sorted panel order
+    assert top_k_overlap_index_ties(true, const, k=k) > 2 * k / n
+
+
+def test_top_k_overlap_without_ties_is_unchanged():
+    from eval_metrics import top_k_overlap_index_ties
+    rng = np.random.default_rng(4)
+    true = rng.normal(size=(30, 300))
+    pred = true + rng.normal(scale=2.0, size=true.shape)
+    assert top_k_overlap(true, pred, k=20) == pytest.approx(
+        top_k_overlap_index_ties(true, pred, k=20))
+
+
+def test_top_k_overlap_partial_ties_share_the_leftover_slots():
+    true = np.zeros((1, 100))
+    true[0, :10] = 10.0                     # true top-10 is columns 0..9
+    pred = np.zeros((1, 100))
+    pred[0, 0:5] = 5.0                      # five clear hits ...
+    pred[0, 5:30] = 1.0                     # ... and 25 tied for the last 5 slots
+    # 5 certain hits + 5 slots * (5 true among the 25 tied) / 25 = 6 of 10
+    assert top_k_overlap(true, pred, k=10) == pytest.approx(0.6)

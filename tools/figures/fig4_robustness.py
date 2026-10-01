@@ -38,31 +38,32 @@ def main(outdir="figures"):
     for xi, h, r in zip(x, head, ridge):
         win = h > r
         axa.text(xi, max(h, r) * 1.035, "head" if win else "ridge", ha="center",
-                 fontsize=5.0, color=ns.C_MODEL if win else ns.C_BASE)
+                 fontsize=5.0, color=ns.C_TEXT)
     axa.text(0.5, max(head + ridge) * 0.12,
              "the head leads on 1 of 3 splits;\nsplit 0 is ridge's weakest",
-             fontsize=5.0, ha="center", color=ns.C_ACCENT)
+             fontsize=5.0, ha="center", color=ns.C_TEXT)
 
     # ---------------- b: budget dependence (single split, labelled) ----
     axb = fig.add_subplot(gs[0, 1]); ns.tidy(axb); ns.panel_label(axb, "b")
     bud = d["budget_seed0"]
     eps = sorted(bud)
     hv = [bud[e]["pearson_dev"] for e in eps]
-    sel = [bud[e]["selected_epoch"] for e in eps]
     rv = bud[eps[0]]["baselines"]["ridge_esm2"]["pearson_dev"]
-    axb.plot(eps, hv, "-o", ms=3.0, lw=1.1, color=ns.C_MODEL, label="P3 head")
-    axb.axhline(rv, color=ns.C_BASE, lw=1.1, ls=(0, (3, 2)), label="ESM2 ridge")
+    axb.plot(eps, hv, "-o", ms=3.0, lw=1.0, color=ns.C_MODEL, label="P3 head")
+    axb.axhline(rv, color=ns.C_BASE, lw=1.0, ls=(0, (3, 2)), label="ESM2 ridge")
     axb.set_xlabel("Training budget (epochs)")
     axb.set_ylabel("Held-out $r$, split 0 only")
     axb.set_xticks(eps)
     axb.legend(fontsize=5.2, loc="upper left", handlelength=1.3, borderpad=0.2)
-    # offsets chosen per point so no label lands on the axis, the line or the key
-    for e, v, sl, off in zip(eps, hv, sel, [(14, -2), (0, 7), (-16, 4)]):
-        axb.annotate(f"epoch {sl}\nselected", (e, v), textcoords="offset points",
-                     xytext=off, ha="center", fontsize=5.0, color=ns.C_FLOOR)
+    # The selected epoch is deliberately NOT annotated: in these runs the
+    # selection slice was also trained on (ERRATA E17), so it tracks training fit
+    # and sits at the end of any budget. The held-out values are the evidence.
+    for e, v, off in zip(eps, hv, [(12, -3), (0, 5), (-12, 4)]):
+        axb.annotate(f"{v:+.3f}", (e, v), textcoords="offset points",
+                     xytext=off, ha="center", fontsize=5.0, color=ns.C_TEXT)
     axb.text(np.mean(eps), min(hv + [rv]) * 0.962,
-             "selection never leaves the budget:\nthe head has not converged",
-             fontsize=5.0, ha="center", color=ns.C_ACCENT)
+             "held-out $r$ still rising at 150 epochs",
+             fontsize=5.0, ha="center", color=ns.C_TEXT)
     axb.set_ylim(min(hv + [rv]) * 0.925, max(hv) * 1.045)
 
     # ---------------- c: embedding dependence --------------------------
@@ -73,19 +74,23 @@ def main(outdir="figures"):
     for y, (lab, summ) in zip(yy, runs):
         p = F.paired(summ, "ridge_esm2")
         col = ns.C_MODEL if (p["lo"] or 0) > 0 else ns.C_BASE
-        axc.plot([p["lo"], p["hi"]], [y, y], color=col, lw=1.1,
+        axc.plot([p["lo"], p["hi"]], [y, y], color=col, lw=1.0,
                  solid_capstyle="butt")
         for e in (p["lo"], p["hi"]):
             axc.plot([e, e], [y - .10, y + .10], color=col, lw=0.8)
         axc.plot([p["diff"]], [y], "o", ms=3.2, color=col, zorder=3)
-    axc.axvline(0, color=ns.C_FLOOR, lw=0.8, ls=(0, (3, 2)))
+    # the zero line stops above the note so the two never cross
+    axc.axvline(0, ymin=0.13, color=ns.C_FLOOR, lw=0.8, ls=(0, (3, 2)))
     axc.set_yticks(yy); axc.set_yticklabels([r[0] for r in runs], fontsize=5.6)
-    axc.set_xlabel("Head − ridge, paired by split (95% CI)")
+    axc.set_xlabel("Head − ridge, paired by split (95% $t$ interval)")
     axc.set_ylim(-0.75, len(runs) - 0.3)
+    n_ex = sum((F.paired(s_, "ridge_esm2")["lo"] > 0) or
+               (F.paired(s_, "ridge_esm2")["hi"] < 0) for _, s_ in runs)
     axc.text(0.0, -0.58,
-             "the head's edge over a linear map exists only\n"
-             "while the representation is impoverished",
-             fontsize=5.0, ha="center", va="center", color=ns.C_ACCENT)
+             (f"no representation gives an interval\nthat excludes zero"
+              if n_ex == 0 else
+              f"{n_ex} of {len(runs)} intervals exclude zero"),
+             fontsize=5.0, ha="center", va="center", color=ns.C_TEXT)
 
     res = ns.save_nature(fig, "fig4_robustness", outdir=outdir, width_mm=w_mm)
     res["font"] = style

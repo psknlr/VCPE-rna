@@ -55,7 +55,7 @@ def main(outdir="figures"):
     for xi, (v, sd) in ((x[0] + wdt / 2, gv[0]), (x[1] + wdt / 2, gv[1])):
         # clear the error bar, not just the bar top
         axa.text(xi, v + (sd or 0) + 0.019, f"{v:+.3f}", ha="center", fontsize=5.4,
-                 color=ns.C_MODEL, fontweight="bold")
+                 color=ns.C_TEXT, fontweight="bold")
 
     # ---------------- b: paired difference, head minus ridge -----------
     axb = fig.add_subplot(gs[0, 1]); ns.tidy(axb); ns.panel_label(axb, "b")
@@ -64,7 +64,7 @@ def main(outdir="figures"):
     yy = np.arange(len(rows))[::-1]
     for y, (lab, p) in zip(yy, rows):
         col = ns.C_MODEL if p["lo"] > 0 else ns.C_BASE
-        axb.plot([p["lo"], p["hi"]], [y, y], color=col, lw=1.1,
+        axb.plot([p["lo"], p["hi"]], [y, y], color=col, lw=1.0,
                  solid_capstyle="butt")
         axb.plot([p["lo"], p["lo"]], [y - .09, y + .09], color=col, lw=0.8)
         axb.plot([p["hi"], p["hi"]], [y - .09, y + .09], color=col, lw=0.8)
@@ -74,11 +74,13 @@ def main(outdir="figures"):
     axb.axvline(0, color=ns.C_FLOOR, lw=0.8, ls=(0, (3, 2)))
     axb.set_yticks(yy); axb.set_yticklabels([r[0] for r in rows], fontsize=5.6)
     axb.set_ylim(-0.55, len(rows) - 0.35)
-    axb.set_xlabel("Head − ridge, paired by split\n(95% CI; ticks are splits)")
-    axb.text(rows[0][1]["hi"] + 0.004, yy[0], "head\nahead", fontsize=5.0,
-             va="center", color=ns.C_MODEL)
-    axb.text(rows[1][1]["hi"] + 0.004, yy[1], "tie", fontsize=5.0,
-             va="center", color=ns.C_BASE)
+    axb.set_xlabel("Head − ridge, paired by split\n(95% $t$ interval; ticks are splits)")
+    axb.set_xticks([-0.05, 0.0, 0.05])
+    # what the data say, not a verdict typed in: splits won and the paired-t P
+    for y, (lab, p) in zip(yy, rows):
+        axb.text(p["hi"] + 0.004, y, f"{p['wins']}/{p['n']} splits\n"
+                 f"$P$ = {p['p']:.2f}", fontsize=5.0, va="center",
+                 color=ns.C_TEXT)
 
     # ---------------- c: what each method gained ------------------------
     axc = fig.add_subplot(gs[0, 2]); ns.tidy(axc); ns.panel_label(axc, "c")
@@ -96,9 +98,10 @@ def main(outdir="figures"):
     for y, g in zip(yy, gains):
         axc.text(g + max(gains) * 0.035, y, f"{g:+.3f}", va="center", fontsize=5.4)
     axc.set_ylim(-0.62, len(keys) - 0.4)
-    axc.text(max(gains) * 0.50, -0.52,
-             "train mean does not read the\nembedding, and does not move",
-             fontsize=5.0, color=ns.C_BASE, ha="center", va="center")
+    # beside its own row, clear of the axis and of the value label
+    axc.text(max(gains) * 0.30, yy[keys.index("train_mean")],
+             "does not read the\nembedding: unchanged",
+             fontsize=5.0, color=ns.C_TEXT, ha="left", va="center")
 
     res = ns.save_nature(fig, "fig2_main", outdir=outdir, width_mm=w_mm)
     res["font"] = style

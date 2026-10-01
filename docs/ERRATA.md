@@ -600,6 +600,164 @@ be measured rather than asserted.
 **Status.** Fixed; default changed. The effect on the reported score is measured
 with the real table, not with the placeholder used for the wiring check above.
 
+## E16 — Top-k overlap broke ties by column position
+
+**Defect.** `top_k_overlap` took `np.argsort(-|x|)[:k]` for the truth and the
+prediction alike. When the prediction has ties -- and "predict no change" is
+nothing *but* ties, every value 0 -- `argsort` returns the tied columns in index
+order, so the constant prediction "selects" the first k columns of the panel.
+`make_hvg_list` sorts the panel by variance, so the first k columns are exactly
+the genes most likely to be among the true top k.
+
+**Size, on committed numbers.** On the main benchmark (ESM2-150M + STRING graph,
+80 epochs, split 0) the no-change predictor scored **top50_dev = 0.387**, above
+the conditioned head's **0.379** and nearly four times the chance level
+k/n = 50/500 = 0.10. On the cell-level screen alone it scored 0.149 against a
+head at 0.096. No headline in this repository rests on top-50 overlap, which is
+why this went unnoticed; it is recorded because the metric is still reported
+beside every run and a reader comparing those columns would have been misled.
+
+A second, separate observation from the same files is not a tie artefact and is
+not fixed by this change: on split 0 of the plain-ESM2-150M model, setting the
+target vector to zero *raises* top-50 overlap from 0.321 to 0.340
+(`results/real_150M/C_ablation.json`). The ablated predictions are continuous, so
+there are no ties; top-50 overlap simply rewards predicting which genes respond
+to perturbations in general, which a model with its conditioning removed still
+does. It is not a measure of perturbation-specific prediction here, and it should
+not be read as one.
+
+**Fix.** Ties are now scored by their expectation under uniformly random
+tie-breaking (`eval_metrics._topk_inclusion`): values strictly above the k-th
+largest |value| count fully, values tied with it share the remaining slots
+equally. Without ties this is exactly the old definition (tested); a constant
+prediction now scores exactly k/n (tested). `train_p3.py`'s private copy of the
+metric was replaced by the shared function. The old form is kept as
+`top_k_overlap_index_ties` only so the defect can be reproduced.
+
+**Not changed:** the legacy P1/P2 training scripts and the unused copy in
+`src/efficacy/metrics.py` keep the old form. Nothing reported uses them.
+
+**Status.** Fixed for every future run. Committed `top50_dev` values were
+computed with the old form; for the trained models and the ridge and k-NN
+controls they are unaffected (continuous predictions, no ties), for the
+no-change predictor they are the artefact described above.
+
+## E17 — The inner-validation items were also trained on
+
+**Defect.** `build_dev_data` carves an inner-validation slice out of the training
+items (15% of training target genes) and the epoch is selected on it. But the
+training loop in `train_p3.py` iterated over **all** training items: `perm =
+torch.randperm(n)` with `n = len(rows_tr)`. The inner-validation perturbations
+were in every epoch's batches. Epoch selection therefore measured fit to items
+the model had been trained on, not generalisation.
+
+**How it showed.** Two symptoms, both visible in the committed logs and only
+read correctly once the figures put them side by side (Extended Data Fig. 3):
+
+* selection drifts to the end of whatever budget is set -- epochs 78, 77 and 78
+  of 80, and 150 of 150 in the long probe -- because training fit keeps rising;
+* the inner-validation score at the selected epoch is far above the held-out
+  score, and the gap grows with training: 0.48 against 0.29 at 30 epochs,
+  0.69 against 0.34 at 80, 0.81 against 0.35 at 150 (split 0).
+
+**What it does not affect.** The held-out split was never touched by selection,
+so every held-out number remains a single-shot estimate for the checkpoint that
+was chosen, and the head and the controls were fit on the same items, so the
+comparisons between them in Table 1 and Fig. 2 stand. What the defect removes is
+the *meaning* of the selected epoch. In particular the statement in
+RESULTS_REAL.md and in the Fig. 4b annotation -- that selection "never leaves the
+budget, so the head has not converged" -- inferred convergence from a criterion
+that tracks training fit and would have said the same at any budget. The
+held-out values on split 0 (0.294, 0.336, 0.350 at 30, 80 and 150 epochs) do
+still rise, so the conclusion that the head is still improving at 80 epochs is
+supported -- by those values, on one split, and not by the selection rule.
+
+**Fix.** The inner-validation items are now held out of the training batches by
+default (`training_indices`), and the ridge, k-NN and train-mean controls are fit
+on exactly the items the head trains on, so a difference between them is still
+not a difference in training data. `--inner_val_in_training` restores the old
+behaviour and is required to reproduce any committed run. The report records
+`inner_val_in_training` and `n_items_fit`, and `run_seeds.py` refuses to pool
+seeds that disagree on it.
+
+The same defect made the external comparison asymmetric. The GEARS and CPA
+adapters train on the training items *minus* the inner split
+(`baseline_common.inner_split_items`, documented as "matching what train_p3
+trains"), while the head and its controls trained on all of them -- about 15% more
+training data on VCPE's side of Table D. Every method there sits at the floor, so
+no conclusion moves, but the asymmetry favoured VCPE and is recorded as such. With
+the fix the docstring is true.
+
+Two milder couplings remain and are stated rather than fixed: the response
+panel and the train-only common core are computed over all training items,
+inner-validation ones included. Neither carries a label of an inner-validation
+item into the head's parameters, but both make the inner-validation score
+somewhat optimistic.
+
+**Status.** Fixed in code; **the reported numbers predate the fix and have not
+been regenerated.** They need re-running before they are quoted as the result of
+the protocol drawn in the figures.
+
+## E18 — The response head was described as 5.7M parameters
+
+README, the docstrings of `baselines.py` and `baseline_gears.py`, and the
+fairness caveat that `baseline_common.py` writes into every external-comparison
+report described "the 5.7M-parameter VCPE head". Instantiated with the
+configuration of the reported runs (`d_model` 256, no RNA branch), the head has
+**1,039,889** parameters on the 480-d ESM2-35M table, **1,121,809** on the 640-d
+ESM2-150M table and **1,449,489** on the 1,280-d graph table. 5.7M belongs to an
+earlier configuration with a 5,120-d embedding and the RNA encoder. The caveat
+text was corrected at its source; `results/real_35M/D_*.json` and `table_D.md`
+were written before the correction and still carry the old sentence. The
+architecture figure reads the count from an instantiated model, so it cannot
+drift again.
+
+## E19 — Three-split confidence intervals used the normal quantile
+
+**Defect.** `run_seeds.py` reported every 95% interval as mean ± 1.96 × s.e.
+With three splits the mean has 2 degrees of freedom and the 95% multiplier is
+t(0.975, 2) = 4.30, so every interval in the committed seed summaries -- and every
+claim resting on one -- was 2.2 times too narrow.
+
+**What changes.** Recomputed from the per-split differences the summaries store:
+
+| configuration | head vs | mean paired diff | 95% t interval | paired t P | splits won |
+|---|---|---|---|---|---|
+| ESM2-35M | ridge | +0.0051 | [-0.0407, +0.0509] | 0.678 | 2/3 |
+| ESM2-35M | k-NN | +0.0272 | [-0.0513, +0.1058] | 0.275 | 2/3 |
+| ESM2-150M | ridge | +0.0274 | [-0.0108, +0.0657] | 0.091 | 3/3 |
+| ESM2-150M | k-NN | +0.0812 | [+0.0361, +0.1264] | 0.016 | 3/3 |
+| + STRING indicator | ridge | +0.0279 | [-0.0105, +0.0663] | 0.089 | 3/3 |
+| + STRING indicator | k-NN | +0.0817 | [+0.0360, +0.1275] | 0.017 | 3/3 |
+| + STRING graph, 30 ep | ridge | -0.0079 | [-0.0277, +0.0119] | 0.230 | 1/3 |
+| + STRING graph, 30 ep | k-NN | +0.0654 | [+0.0049, +0.1258] | 0.043 | 3/3 |
+| + STRING graph, 80 ep | ridge | -0.0024 | [-0.0648, +0.0600] | 0.885 | 1/3 |
+| + STRING graph, 80 ep | k-NN | +0.0709 | [+0.0002, +0.1416] | 0.050 | 3/3 |
+
+The claim that changes is the one this project had leaned on most: **on plain
+ESM2-150M the head led ridge on all three splits by +0.027, but the interval is
+[-0.011, +0.066] and the paired t-test gives P = 0.09.** "Beats ridge, CI
+excluding zero" was not supported; "led on every split, not significant at three
+splits" is what the data say. Three wins out of three is itself weak evidence: a
+two-sided sign test on 3/3 gives P = 0.25. The margins over k-NN on the 150M
+representations do exclude zero (P = 0.016-0.05), the graph-table 80-epoch one
+only just. Nothing about the trivial baselines changes.
+
+Read with E17, the overall statement is simpler than the one it replaces: no
+configuration gives the head a significant advantage over a ridge fit on the same
+features, and the gain the project can defend is the representational one, which
+every method shares.
+
+**Fix.** `run_seeds.py` now uses the t quantile for every interval, records the
+method (`ci_method`) and adds a two-sided paired-t P value (`p_paired_t`); a test
+pins the 4.30 multiplier. The figures do not read the stored intervals at all:
+`figdata.paired` recomputes them from the per-split differences and checks the
+stored mean, so the committed summaries' old intervals cannot reach a figure.
+
+**Status.** Fixed in code and in every figure. The committed `seed_summary.json`
+files keep the old intervals as written; RESULTS_REAL.md and README now cite the
+recomputed ones.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically
@@ -634,7 +792,9 @@ footing. The result is in [RESULTS_REAL.md](RESULTS_REAL.md), and the honest
 headline is that on real data the model clears the trivial floors decisively and
 its edge over a ridge regression on the same embeddings is embedding-dependent:
 a tie on ESM2-35M (paired CI [-0.016, +0.026]) that becomes a small consistent
-win on ESM2-150M (+0.027, CI [+0.010, +0.045], every seed). A confident claim I
+win on ESM2-150M (+0.027, CI [+0.010, +0.045], every seed). [Corrected by E19:
+those intervals used 1.96 with three splits; with the t quantile the 150M margin
+over ridge is [-0.011, +0.066], P = 0.09 -- consistent, not significant.] A confident claim I
 had written here -- that a stronger embedding "could only weaken the model's
 case" -- was falsified by the 150M run, which helped the non-linear head more
 than the linear controls; the correction is in RESULTS_REAL.md. The per-axis

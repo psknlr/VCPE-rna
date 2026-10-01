@@ -155,6 +155,13 @@ python src/maprna_p3/train_p3.py \
 (`--min_cells 1` because the ingest adapter already applied the cell-count gate;
 see 1.2. With GEARS' own `perturb_processed.h5ad` files, drop it.)
 
+**To reproduce a committed run, add `--inner_val_in_training`.** Every result in
+`results/` was produced before ERRATA E17 was fixed, when the inner-validation
+items were also trained on. The default now holds them out of training and fits
+the controls on the same reduced item set, so a run without the flag is the
+corrected protocol and will not match the committed numbers. Each report records
+which it was (`inner_val_in_training`, `n_items_fit`).
+
 `--split_by target_gene` is the default and holds out whole target genes. The
 alternative, `--split_by pert`, reproduces the historical split and prints a
 warning naming how many target genes appear on both sides; with a genome-wide
@@ -430,3 +437,39 @@ Outstanding section:
   nothing about the magnitude in the withdrawn runs, which combined a genome-wide
   screen with a ~5k-gene panel. Do not quote the one as an estimate of the other.
 * **The L2 RNA-encoder track has no results**, only a launch command.
+
+---
+
+## Display items
+
+Everything in `figures/` is rebuilt, and audited, by one command. It needs no
+data: every value is read from `results/**/*.json`.
+
+```bash
+python3 tools/simulate_protocol_traps.py   # results/simulation/protocol_traps.json (~10 s)
+python3 tools/figures/make_all.py          # all display items, legends, manifest
+```
+
+| output | specification | contents |
+|---|---|---|
+| `figures/fig1..5_*.pdf`, `legends.md`, `table1.md` | Nature portfolio | main figures and Table 1 |
+| `figures/extended_data/edfig1..5_*.pdf`, `legends_extended_data.md` | Nature portfolio | Extended Data Figs 1-5 |
+| `figures/ieee/fig_architecture.{pdf,eps}`, `caption_ieee.tex` | IEEE Transactions | network architecture, Times-metric 9 pt |
+| `figures/ieee/fig_architecture_nature.pdf`, `legend_nature.md` | Nature portfolio | the same architecture re-typeset, Arial-metric 7 pt |
+
+`make_all.py` exits non-zero if any item is off-spec. The Nature audit checks the
+saved PDF itself -- every font is the figure face (STIX allowed only for math
+glyphs Arial lacks), nothing is set below 5 pt (sub- and superscripts included),
+strokes stay within 0.25-1 pt, no text is coloured -- plus width class, height,
+600 dpi RGB rasters and the 300-word legend cap. The IEEE audit checks the column
+width, 9-10 pt type, strokes of at least 0.5 pt, that every boxed label fits its
+box, and that the block kinds stay distinguishable in greyscale. The
+architecture figure reads layer shapes, the parameter count, the gate constants
+and the optimiser, clip, loss and selection rule from the code, and refuses to
+build if any of them has drifted. `tests/test_figure_specs.py` checks that each
+audit catches the violation it claims to.
+
+If the target journal takes Supplementary Information rather than Extended Data
+(check its guide to authors), the Extended Data files are used unchanged,
+renumbered as Supplementary Figs 1-5.
+

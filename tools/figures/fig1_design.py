@@ -119,7 +119,7 @@ def main(outdir="figures"):
     for x, v in ((0, both), (1, tian)):
         axc.text(x, v + 0.012, f"{v:+.3f}", ha="center", fontsize=5.6)
     axc.text(0.5, 0.30, "27 held-out genes:\nevery method at the floor",
-             ha="center", fontsize=5.0, color=ns.C_ACCENT)
+             ha="center", fontsize=5.0, color=ns.C_TEXT)
 
     # ---------------- d: the estimator trap ----------------------------
     axd = fig.add_subplot(gs[1, 2])
@@ -140,7 +140,7 @@ def main(outdir="figures"):
                                  mutation_scale=5))
     axd.text(0.5, max(delta, dev) * 1.18,
              f"shared response inflates by {delta - dev:+.3f}", ha="center",
-             fontsize=5.0, color=ns.C_ACCENT)
+             fontsize=5.0, color=ns.C_TEXT)
 
     res = ns.save_nature(fig, "fig1_design", outdir=outdir, width_mm=w_mm)
     res["font"] = style

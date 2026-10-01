@@ -117,6 +117,17 @@ def test_selection_uses_the_inner_split_not_the_test_split(trained):
     assert log.count("held-out results (scored once") == 1
 
 
+def test_inner_validation_items_are_held_out_of_training(trained):
+    """ERRATA E17: the slice that selects the epoch must not be trained on."""
+    out, log = trained
+    assert "inner-val held out" in log
+    final = json.loads((out / "final_report.json").read_text())
+    assert final["inner_val_in_training"] is False
+    n_inner = int(log.split("inner-val for selection: ")[1].split(" of ")[0])
+    n_train = int(log.split("inner-val for selection: ")[1].split(" of ")[1].split()[0])
+    assert final["n_items_fit"] == n_train - n_inner
+
+
 def test_baselines_are_reported_beside_the_model(trained):
     out, log = trained
     for name in ("zero", "train_mean", "knn_esm2", "ridge_esm2"):

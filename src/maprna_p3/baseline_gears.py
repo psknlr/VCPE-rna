@@ -46,9 +46,9 @@ What is *not* controlled, and must be reported alongside any result:
 * **GEARS's own preprocessing.** `PertData` recomputes DE genes and its own
   perturbation graph. Those are part of GEARS and are left alone; disabling them
   would not be "GEARS".
-* **Capacity.** GEARS at defaults is far larger than the 5.7M-parameter VCPE
-  head. If VCPE wins, it wins as the smaller model; if it loses, the size
-  difference is an explanation, not an excuse.
+* **Capacity.** GEARS at its defaults and the VCPE head (about 1.0-1.5M
+  parameters in the reported configurations, ERRATA E18) differ in size, and the
+  difference is not controlled here. It can explain a gap; it does not excuse one.
 
 Usage
 -----

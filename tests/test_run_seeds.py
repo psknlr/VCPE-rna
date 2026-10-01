@@ -235,3 +235,21 @@ def test_it_refuses_seeds_that_used_different_estimators(tmp_path):
         capture_output=True, text=True, timeout=300)
     assert p.returncode != 0
     assert "E4" in (p.stdout + p.stderr)
+
+
+def test_three_split_interval_uses_the_t_quantile_not_1_96():
+    """ERRATA E19: with n = 3 the 95% multiplier is t(0.975, 2) = 4.303."""
+    vals = [0.10, 0.20, 0.30]
+    s = summarise(vals, "x")
+    half = (s["ci95_mean"][1] - s["ci95_mean"][0]) / 2
+    se = np.std(vals, ddof=1) / np.sqrt(3)
+    assert half == pytest.approx(4.302652729911275 * se)
+    assert half > 2 * 1.96 * se
+
+
+def test_paired_p_value_matches_a_paired_t_test():
+    from scipy import stats
+    from run_seeds import paired_t_p
+    d = [0.02, 0.035, 0.027]
+    assert paired_t_p(d) == pytest.approx(stats.ttest_1samp(d, 0.0).pvalue)
+    assert paired_t_p([0.1]) is None

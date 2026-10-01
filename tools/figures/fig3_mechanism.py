@@ -52,7 +52,7 @@ def main(outdir="figures"):
                  fontsize=5.2)
     axa.text(rows["intact"][1] * 0.40, yy[-1] - 0.95,
              "grey channels leave the prediction\nbit-identical: they carry nothing",
-             fontsize=5.0, color=ns.C_BASE, ha="center", va="center")
+             fontsize=5.0, color=ns.C_TEXT, ha="center", va="center")
     axa.set_ylim(-1.5, len(labs) - 0.4)
 
     # ---------------- b: which floor you quote matters ------------------
@@ -76,7 +76,7 @@ def main(outdir="figures"):
                  fontsize=5.2)
     axb.text(0.5, (intact - fz) * 1.14,
              "zeroing is off-distribution\nand flatters the floor",
-             ha="center", fontsize=5.0, color=ns.C_ACCENT)
+             ha="center", fontsize=5.0, color=ns.C_TEXT)
 
     # ---------------- c: sparse channel vs dense embedding -------------
     axc = fig.add_subplot(gs[0, 2]); ns.tidy(axc); ns.panel_label(axc, "c")
@@ -98,7 +98,7 @@ def main(outdir="figures"):
         axc.text(xi, v + max(gains) * 0.035, f"{v:+.4f}", ha="center", fontsize=5.4)
     axc.text(0.5, max(gains) * 1.14,
              "support, not biology, is the limit", ha="center", fontsize=5.0,
-             color=ns.C_ACCENT)
+             color=ns.C_TEXT)
 
     res = ns.save_nature(fig, "fig3_mechanism", outdir=outdir, width_mm=w_mm)
     res["font"] = style

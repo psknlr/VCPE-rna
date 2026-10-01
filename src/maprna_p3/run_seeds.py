@@ -74,16 +74,43 @@ def parse_args():
     return a
 
 
+#: How every interval in a summary is computed. Before ERRATA E19 this was the
+#: normal quantile 1.96, which with three splits understates a 95% interval by a
+#: factor of t(0.975, 2) / 1.96 = 2.2.
+CI_METHOD = "mean +/- t(0.975, n-1) * sd / sqrt(n)"
+
+
+def t95(n):
+    """Two-sided 95% Student-t quantile for a mean of n observations."""
+    from scipy import stats
+    return float(stats.t.ppf(0.975, n - 1))
+
+
+def paired_t_p(d):
+    """Two-sided paired t-test P value for differences `d` (None if undefined)."""
+    from scipy import stats
+    d = np.asarray(d, dtype=float)
+    if d.size < 2:
+        return None
+    sd = float(np.std(d, ddof=1))
+    if not sd > 0:
+        return None
+    t = float(d.mean()) / (sd / np.sqrt(d.size))
+    return float(2 * stats.t.sf(abs(t), d.size - 1))
+
+
 def summarise(vals, label):
     v = np.asarray([x for x in vals if x is not None and np.isfinite(x)], dtype=float)
     if v.size == 0:
         return dict(label=label, n=0)
     sd = float(np.std(v, ddof=1)) if v.size > 1 else None
     se = (sd / np.sqrt(v.size)) if sd is not None else None
+    hw = t95(v.size) * se if se is not None else None
     return dict(label=label, n=int(v.size), mean=float(v.mean()), sd=sd,
                 min=float(v.min()), max=float(v.max()),
-                ci95_mean=([float(v.mean() - 1.96 * se), float(v.mean() + 1.96 * se)]
-                           if se is not None else None),
+                ci95_mean=([float(v.mean() - hw), float(v.mean() + hw)]
+                           if hw is not None else None),
+                ci_method=CI_METHOD,
                 per_seed=[float(x) for x in v])
 
 
@@ -133,7 +160,7 @@ def main():
     # how a producer and a consumer come to disagree (ERRATA E11).
     PROTOCOL_KEYS = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
                      "min_cells", "epochs", "inner_val_frac", "esm_table",
-                     "use_mask", "knn_k", "d_model")
+                     "use_mask", "knn_k", "d_model", "inner_val_in_training")
     proto, disagree = {}, {}
     for k in PROTOCOL_KEYS:
         vals = {s: (reports[s].get("provenance", {}).get("args", {}) or {}).get(k)
@@ -178,11 +205,14 @@ def main():
             continue
         sd = float(np.std(d, ddof=1)) if d.size > 1 else None
         se = (sd / np.sqrt(d.size)) if sd else None
+        hw = t95(d.size) * se if se else None
         wins = int((d > 0).sum())
         paired[n] = dict(
             n=int(d.size), mean_difference=float(d.mean()), sd=sd,
-            ci95_mean_difference=([float(d.mean() - 1.96 * se),
-                                   float(d.mean() + 1.96 * se)] if se else None),
+            ci95_mean_difference=([float(d.mean() - hw),
+                                   float(d.mean() + hw)] if hw else None),
+            ci_method=CI_METHOD,
+            p_paired_t=paired_t_p(d),
             seeds_where_model_wins=wins,
             verdict=("model beats this baseline on every seed" if wins == d.size
                      else "model loses to this baseline on every seed" if wins == 0
