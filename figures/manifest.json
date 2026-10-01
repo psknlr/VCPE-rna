@@ -79,9 +79,131 @@
         "font": "Liberation Sans",
         "font_is_metric_clone_of_arial": true
       }
+    },
+    {
+      "name": "Extended Data Fig. 1",
+      "stem": "edfig1_simulation",
+      "paths": [
+        "/home/user/VCPE-rna/figures/extended_data/edfig1_simulation.pdf",
+        "/home/user/VCPE-rna/figures/extended_data/edfig1_simulation.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 112.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      },
+      "n_replicates": 20
+    },
+    {
+      "name": "Extended Data Fig. 2",
+      "stem": "edfig2_benchmark",
+      "paths": [
+        "/home/user/VCPE-rna/figures/extended_data/edfig2_benchmark.pdf",
+        "/home/user/VCPE-rna/figures/extended_data/edfig2_benchmark.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 118.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    },
+    {
+      "name": "Extended Data Fig. 3",
+      "stem": "edfig3_training",
+      "paths": [
+        "/home/user/VCPE-rna/figures/extended_data/edfig3_training.pdf",
+        "/home/user/VCPE-rna/figures/extended_data/edfig3_training.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 112.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    },
+    {
+      "name": "Extended Data Fig. 4",
+      "stem": "edfig4_metrics",
+      "paths": [
+        "/home/user/VCPE-rna/figures/extended_data/edfig4_metrics.pdf",
+        "/home/user/VCPE-rna/figures/extended_data/edfig4_metrics.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 66.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    },
+    {
+      "name": "Extended Data Fig. 5",
+      "stem": "edfig5_external",
+      "paths": [
+        "/home/user/VCPE-rna/figures/extended_data/edfig5_external.pdf",
+        "/home/user/VCPE-rna/figures/extended_data/edfig5_external.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 62.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      },
+      "n_held_out": 27
+    },
+    {
+      "name": "Architecture (ieee)",
+      "stem": "fig_architecture",
+      "paths": [
+        "/home/user/VCPE-rna/figures/ieee/fig_architecture.pdf",
+        "/home/user/VCPE-rna/figures/ieee/fig_architecture.eps",
+        "/home/user/VCPE-rna/figures/ieee/fig_architecture.png"
+      ],
+      "width_in": 7.16,
+      "height_in": 5.02,
+      "width_mm": 181.9,
+      "height_mm": 127.5,
+      "column_class": "double",
+      "raster_dpi": 600,
+      "warnings": [],
+      "font": {
+        "font": "Liberation Serif",
+        "family": "serif",
+        "metric_clone_of": "Times New Roman",
+        "math": "stix"
+      },
+      "profile": "ieee"
+    },
+    {
+      "name": "Architecture (nature)",
+      "stem": "fig_architecture_nature",
+      "paths": [
+        "/home/user/VCPE-rna/figures/ieee/fig_architecture_nature.pdf",
+        "/home/user/VCPE-rna/figures/ieee/fig_architecture_nature.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 128.3,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      },
+      "profile": "nature"
     }
   ],
   "font_note": "Arial/Helvetica are not installed in this container. Liberation Sans is metrically identical to Arial, so the layout is unchanged when a production system substitutes real Arial. Text is embedded as Type 42 and remains selectable and editable in the PDFs.",
   "data_note": "Every value is read from results/**/*.json by tools/figures/figdata.py. No measurement is typed into the plotting code.",
-  "git": "362bbf4"
+  "git": "8a52a03"
 }

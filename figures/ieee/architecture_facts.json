@@ -1,0 +1,61 @@
+{
+  "source_run": "results/real_150M_graph_long/A_seeds",
+  "inner_val_held_out": true,
+  "reported_runs_predate_e17": true,
+  "n_params_plain": 1121809,
+  "n_mlp_linear": 3,
+  "n_hvg": 500,
+  "n_ds": 2,
+  "d_model": 256,
+  "d_table": 1280,
+  "d_own": 640,
+  "hidden": [
+    [
+      1035,
+      512
+    ],
+    [
+      512,
+      512
+    ],
+    [
+      512,
+      1
+    ]
+  ],
+  "activation": "GELU",
+  "dropout": 0.1,
+  "ds_emb": [
+    2,
+    8
+  ],
+  "proj": [
+    1280,
+    256
+  ],
+  "concat_dim": 1035,
+  "n_params": 1449489,
+  "gate_tau": 0.7,
+  "gate_slope": 6.0,
+  "batch": 16,
+  "lr": 0.001,
+  "wd": 0.01,
+  "epochs": 80,
+  "inner_val_frac": 0.15,
+  "knn_k": 10,
+  "knn_weighted": true,
+  "use_mask": true,
+  "split_by": "target_gene",
+  "hvg_from": "train",
+  "optimiser": "AdamW",
+  "scheduler": "CosineAnnealingLR",
+  "clip": 1.0,
+  "masked_mse": true,
+  "selection": "inner_val_pearson_dev",
+  "ridge_alpha": 1.0,
+  "string_min_score": 700,
+  "string_top_k": 32,
+  "esm_model": "facebook/esm2_t30_150M_UR50D",
+  "esm_layers": 30,
+  "esm_size": "150M"
+}
