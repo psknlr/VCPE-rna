@@ -1,14 +1,17 @@
 #!/usr/bin/env python
-"""G0 前置任务：导出肝系锚点靶点的全 2000-HVG 预测向量（虚拟肝脏 P1 前置）。
+"""G0 prerequisite task: export the full 2000-HVG prediction vectors of the
+liver-lineage anchor targets (prerequisite for the virtual liver P1).
 
-从 p3_v21e ckpt 重建引擎（同 eval_aso_domain 协议：donor=hepg2 ctrl z-score、
-ckpt 内微调 rna_encoder、标量门控 pe、STRING 邻接），对每个目标靶点输出
-完整 pred_fc = dev + common_fc（2000 维，hvg_rows 对应符号）。
+Rebuilds the engine from the p3_v21e ckpt (same protocol as eval_aso_domain:
+donor=hepg2 ctrl z-score, the rna_encoder fine-tuned inside the ckpt, scalar
+gating pe, STRING adjacency) and, for each requested target, writes the full
+pred_fc = dev + common_fc (2000 dims, symbols corresponding to hvg_rows).
 
-注意 ds_emb 行号：n_ds=9 的 hepg2 行号 = 5（训练时 data_dirs 的下标），
-即使这里只为 donor ctrl 加载 hepg2 一个数据集，dsi 仍须传 5。
+Note on the ds_emb row index: for n_ds=9 the hepg2 row index = 5 (its index in
+data_dirs at training time); even though only the single hepg2 dataset is
+loaded here, and only for the donor ctrl, dsi must still be passed as 5.
 
-用法（GPU）：
+Usage (GPU):
   python export_full_vectors.py \
     --ckpt $BASE/p3_v21e/ckpt_p3_best_dev.pt \
     --hepg2_h5ad $BASE/data/scperturb/NadigOConner2024_hepg2_proc.h5ad \
@@ -18,7 +21,8 @@ ckpt 内微调 rna_encoder、标量门控 pe、STRING 邻接），对每个目�
     --fasta $BASE/data/gene_transcripts.fa \
     --donor_ds_idx 5 \
     --out $BASE/full_vectors_v21e.json
-产物传回本机做 G0 裁决（DEG 覆盖/方向一致率重测）。
+The product is transferred back to the local machine for the G0 ruling (re-test
+of DEG coverage / direction-consistency rate).
 """
 import argparse
 import json
@@ -37,7 +41,7 @@ for _sib in ("maprna_p1", "maprna_p2", "maprna_p3"):
         sys.path.insert(0, _p)
 
 from ds_knockdown import load_kd_datasets, build_symbol2row, resolve_pert_row  # noqa: E402
-from model_dev import DeviationModel, load_esm_matrix  # noqa: E402
+from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
 
 TARGETS = ["SCARB1", "APOC3", "ALB", "MYC", "ACTN1"]
 
@@ -51,7 +55,8 @@ def main():
     ap.add_argument("--rna_encoder_ckpt", required=True)
     ap.add_argument("--fasta", required=True)
     ap.add_argument("--donor_ds_idx", type=int, default=5,
-                    help="hepg2 在训练 data_dirs 中的下标（ds_emb 行号），p3_v21e=5")
+                    help="index of hepg2 in the training data_dirs (the "
+                         "ds_emb row index), p3_v21e=5")
     ap.add_argument("--targets", nargs="+", default=TARGETS)
     ap.add_argument("--min_cells", type=int, default=3)
     ap.add_argument("--out", required=True)
@@ -71,16 +76,18 @@ def main():
     sym_by_row = {int(r): s for s, r in sym2row.items()}
     esm = load_esm_matrix(args.esm_table)
 
-    # donor(hepg2) ctrl over ckpt hvg panel（dataset 内 z-score，同 train_p3）
+    # donor(hepg2) ctrl over ckpt hvg panel (within-dataset z-score, same as
+    # train_p3)
     kd = load_kd_datasets([args.hepg2_h5ad], sym2row, min_cells=args.min_cells)
-    di = 0  # 只加载了 hepg2 一个数据集
+    di = 0  # only the single hepg2 dataset was loaded
     r2c = {int(r): c for c, r in enumerate(kd["row_of_gene"][di])}
     cm = np.asarray(kd["X_ctrl"][di].mean(axis=0), dtype=np.float32)
     ctrl_vec = np.array([cm[r2c.get(hr, -1)] if r2c.get(hr, -1) >= 0 else 0.0
                          for hr in hvg_rows], dtype=np.float32)
     cf = ((ctrl_vec - ctrl_vec.mean()) / (ctrl_vec.std() + 1e-6))[None, :]
 
-    # rna_encoder：ckpt 内 fine-tuned 权重覆盖 Stage-A 初始化
+    # rna_encoder: the fine-tuned weights inside the ckpt overwrite the
+    # Stage-A initialization
     sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "maprna_p2")))
     from rna_encoder import RNAEncoder, encode_seq, load_fasta_symbol_seqs, lookup_seq
     rna_enc = RNAEncoder(d_model=256, max_len=600).to(device).eval()
@@ -92,9 +99,9 @@ def main():
     model = DeviationModel(esm, hvg_rows, n_ds=n_ds, rna_encoder=rna_enc).to(device).eval()
     if args.string_neighbors and os.path.exists(args.string_neighbors):
         model.set_neighbor_table(np.load(args.string_neighbors), device)
-    model.load_state_dict(ck["model_state_dict"])
+    load_dev_state(model, ck)
 
-    # hvg panel 符号表
+    # hvg panel symbol table
     syms = [sym_by_row.get(int(r)) for r in hvg_rows]
     hepg2_sym2col = {}
     for i, r in enumerate([int(x) for x in kd["row_of_gene"][di]]):
@@ -109,7 +116,7 @@ def main():
     for tgt in args.targets:
         row = resolve_pert_row(sym2row, tgt)
         if row is None or int(row) < 0:
-            print(f"[{tgt}] 靶基因无法解析，跳过", flush=True)
+            print(f"[{tgt}] target gene cannot be resolved, skipping", flush=True)
             continue
         seq = lookup_seq(tgt, symbol_map, ensembl_map)
         if seq:
@@ -131,7 +138,7 @@ def main():
                     "fc": pred_fc.tolist()}
         in_panel = sym_by_row.get(int(row)) in syms
         self_v = pred_fc[syms.index(sym_by_row.get(int(row)))] if in_panel else None
-        print(f"[{tgt}] pe={pe:.3f} | self={('%.3f' % self_v) if self_v is not None else 'panel外'} | "
+        print(f"[{tgt}] pe={pe:.3f} | self={('%.3f' % self_v) if self_v is not None else 'off-panel'} | "
               f"fc std={pred_fc.std():.3f} max|.|={np.abs(pred_fc).max():.3f}", flush=True)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)

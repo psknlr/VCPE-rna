@@ -1,5 +1,7 @@
 # Data-Expansion Acceptance Report (2026-09-04)
 
+> **⚠️ The headline of this report is withdrawn.** The `0.31 → 0.71` comparison subtracts two *different* estimators — a per-perturbation mean and a flattened pooled correlation — which is also the true cause of the "in-training 0.2076 vs eval_fair 0.3141" discrepancy logged below as an open backlog item. The split additionally did not hold out target genes, while the training set contains a genome-wide screen covering them. See [../ERRATA.md](../ERRATA.md), E4 and E5.
+
 ## Conclusion: **pass ✅**
 
 Training set 1,843 → **16,276 perts** (×8.8). With the lr 3e-4 collapse fix, same-distribution-domain

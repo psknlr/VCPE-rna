@@ -1,22 +1,41 @@
 #!/usr/bin/env python
-"""V2-1c: GSE293987 (Ionis CR-DGE) 摄入 —— ASO 域真实扰动数据。
+"""V2-1c: GSE293987 (Ionis CR-DGE) ingestion -- real ASO-domain perturbation
+data.
 
-数据集（Liang et al., "A Workflow for Transcriptome-wide Assessment of
-Antisense Oligonucleotide Selectivity"）：
-  - A431 细胞（epidermoid carcinoma，全新细胞语境，非 K562）
-  - ACTN1 gapmer ASO + 非靶向 CONTROL ASO，10 个浓度（0.0052~20 uM，4 倍稀释）× 2 重复
-  - 8 个 UTC（未处理对照）；3'Tag-Seq / salmonDGE quant（53 个 quant.sf.gz）
+Dataset (Liang et al., "A Workflow for Transcriptome-wide Assessment of
+Antisense Oligonucleotide Selectivity"):
+  - A431 cells (epidermoid carcinoma, a brand-new cell context, not K562)
+  - ACTN1 gapmer ASO + non-targeting CONTROL ASO, 10 concentrations
+    (0.0052~20 uM, 4-fold dilution) × 2 replicates
+  - 8 UTC (untreated controls); 3'Tag-Seq / salmonDGE quant (53 quant.sf.gz)
 
-产出（scPerturb 同构，可直接进 load_kd_datasets / train_p3）：
-  gse293987_proc.h5ad —— X = log1p(CP10K)，obs:
-      condition = "ACTN1"（浓度 >= --min_uM，默认 1.28）| "ctrl"（UTC + CONTROL 全浓度）
-      control   = 1 (ctrl 行)
-      concentration_uM / sample_id / aso_class / cell_line = A431 / perturbation_type = ASO
-  gse293987_full.h5ad —— 全部 53 样本带完整元数据（供后续剂量建模，不进训练）
+Products (isomorphic to scPerturb, can go straight into load_kd_datasets /
+train_p3):
+  gse293987_proc.h5ad -- X = log1p(CP10K), obs:
+      condition = "ACTN1"   (ACTN1 ASO at concentration >= --min_uM)
+                | "ctrl"    (CONTROL ASO only)
+                | "utc_ref" (UTC, OTHER, and ACTN1 below --min_uM)
+          UTC is deliberately kept OUT of the ctrl pool: an untreated sample
+          carries no transfection stress, so pooling it with the control ASO
+          would push that stress into the baseline and inflate every
+          fold-change. See the comment above the assignment.
+          Note that "utc_ref" rows are still present in the _proc file, so
+          condition is not limited to {"ACTN1", "ctrl"} -- see the _proc note
+          further down, and docs/ERRATA.md E13a.
+          (Up to v4 this line claimed "ctrl" covered UTC + CONTROL at all
+          concentrations, which the code has never done.)
+      control   = 1 (ctrl rows)
+      concentration_uM / sample_id / aso_class / cell_line = A431 /
+      perturbation_type = ASO
+  gse293987_full.h5ad -- all 53 samples with the complete metadata (for later
+      dose modelling; does not enter training)
 
-用法：
-  python ingest_gse293987.py --list-only      # 只列设计表（元数据来自本地/远程 miniml）
-  python ingest_gse293987.py                  # 下载 RAW.tar(136MB) + 聚合 + 出 h5ad
+Usage:
+  python ingest_gse293987.py --list-only      # only list the design table
+                                              # (metadata from the local/remote
+                                              # miniml)
+  python ingest_gse293987.py                  # download RAW.tar(136MB) +
+                                              # aggregate + emit h5ad
 """
 import argparse
 import gzip
@@ -39,11 +58,14 @@ BASE_URL = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE293nnn/GSE293987"
 MINIML_TGZ = f"{BASE_URL}/miniml/GSE293987_family.xml.tgz"
 RAW_TAR = f"{BASE_URL}/suppl/GSE293987_RAW.tar"
 NS = {"m": "http://www.ncbi.nlm.nih.gov/geo/info/MINiML"}
-MIN_CONC_UM = 1.28      # 纳入 ACTN1 扰动条件的最低浓度（低于此 KD 信号被稀释）
+MIN_CONC_UM = 1.28      # lowest concentration admitted as an ACTN1 perturbation
+                        # condition (below it the KD signal is diluted)
 
 
 def load_metadata():
-    """GSM/标题/浓度/类别 → DataFrame（本地 family.xml 优先，缺失则下载）。"""
+    """GSM/title/concentration/class → DataFrame (local family.xml preferred,
+    downloaded when missing).
+    """
     xml_fp = DIR / "GSE293987_family.xml"
     if not xml_fp.exists():
         print("[meta] downloading miniml ...", flush=True)
@@ -58,7 +80,8 @@ def load_metadata():
         chars = [c.text.strip() for c in s.findall(".//m:Characteristics", NS)]
         conc = next((c for c in chars if c.endswith("uM")), "0 uM")
         conc_um = float(conc.replace("uM", "").strip())
-        # 子串匹配（EXP1/EXP2 两批的 UTC 都要识别，不能只匹配前缀）
+        # Substring match (the UTC of both the EXP1 and EXP2 batches must be
+        # recognized, so matching the prefix alone is not enough)
         aso_class = ("UTC" if "UTC" in title else
                      "ACTN1" if "ACTN" in title else
                      "CONTROL" if "CONTROL" in title else "OTHER")
@@ -71,7 +94,7 @@ def load_metadata():
 
 
 def load_tx2gene():
-    """GENCODE v47 transcript_id -> gene_name（strip 版本号）。"""
+    """GENCODE v47 transcript_id -> gene_name (version suffix stripped)."""
     tx2gene = {}
     with gzip.open(GTF, "rt") as f:
         for line in f:
@@ -90,7 +113,7 @@ def load_tx2gene():
 
 
 def quant_to_gene(quant_fp, tx2gene):
-    """单个 quant.sf(.gz) -> (gene -> NumReads, gene -> TPM) 聚合（求和）。"""
+    """A single quant.sf(.gz) -> (gene -> NumReads, gene -> TPM) aggregation (sum)."""
     opener = gzip.open if str(quant_fp).endswith(".gz") else open
     reads, tpm = defaultdict(float), defaultdict(float)
     with opener(quant_fp, "rt") as f:
@@ -113,7 +136,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list-only", action="store_true")
     ap.add_argument("--min_uM", type=float, default=MIN_CONC_UM,
-                    help="ACTN1 纳入扰动条件的最低浓度（默认 1.28）")
+                    help="lowest concentration at which ACTN1 is admitted as "
+                         "a perturbation condition (default 1.28)")
+    ap.add_argument("--proc_drop_utc_ref", action="store_true",
+                    help="make the _proc file an actual subset by dropping the "
+                         "'utc_ref' rows (UTC / OTHER / sub-threshold ACTN1). "
+                         "Off by default: the historical mask was a no-op, so "
+                         "the default reproduces the file downstream work used.")
     ap.add_argument("--out_prefix", default="gse293987")
     args = ap.parse_args()
 
@@ -123,19 +152,20 @@ def main():
           f"ACTN1 {sum(meta.aso_class == 'ACTN1')} | "
           f"CONTROL {sum(meta.aso_class == 'CONTROL')} | "
           f"UTC {sum(meta.aso_class == 'UTC')} | "
-          f"浓度 {sorted(set(meta.concentration_uM))}", flush=True)
+          f"concentrations {sorted(set(meta.concentration_uM))}", flush=True)
     if args.list_only:
         print(meta.to_string())
         return
 
-    # ---- 下载 RAW.tar：断点续传（Range）+ Content-Length 校验 ----
-    # NCBI 经代理限速且会中途掐断连接（实测 61MB 处 EOF），必须续传+验长。
+    # ---- download RAW.tar: resumable (Range) + Content-Length check ----
+    # Through a proxy NCBI rate-limits and cuts the connection part-way (EOF
+    # observed at 61MB), so resuming plus a length check is mandatory.
     tar_fp = DIR / "GSE293987_RAW.tar"
     part_fp = DIR / "GSE293987_RAW.tar.part"
-    EXPECTED = 136570880  # filelist.txt 报的大小（bytes）
+    EXPECTED = 136570880  # the size reported by filelist.txt (bytes)
     if not tar_fp.exists():
         print(f"[dl] {RAW_TAR} (EXPECTED {EXPECTED/1e6:.1f} MB) ...", flush=True)
-        for attempt in range(1, 21):   # 最多 20 段续传
+        for attempt in range(1, 21):   # at most 20 resumed segments
             have = part_fp.stat().st_size if part_fp.exists() else 0
             if have >= EXPECTED:
                 break
@@ -162,16 +192,18 @@ def main():
         if part_fp.stat().st_size != EXPECTED:
             raise RuntimeError(
                 f"download incomplete: {part_fp.stat().st_size}/{EXPECTED} "
-                f"(20 次续传仍未完成，请手动下载 {RAW_TAR} 放到 {DIR})")
-        os.replace(part_fp, tar_fp)      # 原子改名：只有完整 tar 才会落位
+                f"(still incomplete after 20 resume attempts; download "
+                f"{RAW_TAR} manually and place it in {DIR})")
+        os.replace(part_fp, tar_fp)      # atomic rename: only a complete tar
+                                         # ever lands in place
     print(f"[dl] tar ready: {tar_fp.stat().st_size/1e6:.1f} MB", flush=True)
 
-    # ---- GSM -> tar 内文件名映射 ----
+    # ---- GSM -> file-name-inside-tar mapping ----
     with tarfile.open(tar_fp) as tf:
         members = {m.name.split("_")[0]: m.name for m in tf.getmembers()}
     tx2gene = load_tx2gene()
 
-    # ---- 逐样本聚合 ----
+    # ---- per-sample aggregation ----
     gene_set = set()
     samples, matrices_reads = [], {}
     with tarfile.open(tar_fp) as tf:
@@ -184,7 +216,8 @@ def main():
             member = tf.getmember(fname)
             with tf.extractfile(member) as fh:
                 raw = gzip.decompress(fh.read()).decode()
-            # 解析 quant.sf：Name / TPM / NumReads，转录本聚合到基因（求和）
+            # parse quant.sf: Name / TPM / NumReads, transcripts aggregated to
+            # genes (sum)
             header = raw.split("\n", 1)[0].split("\t")
             i_name, i_tpm, i_reads = header.index("Name"), header.index("TPM"), header.index("NumReads")
             r_agg, t_agg = defaultdict(float), defaultdict(float)
@@ -209,17 +242,22 @@ def main():
     for si, s in enumerate(samples):
         for g, v in matrices_reads[s].items():
             R[si, gi[g]] = v
-    # CP10K + log1p（scPerturb 同构）
+    # CP10K + log1p (isomorphic to scPerturb)
     tot = R.sum(axis=1, keepdims=True) + 1e-6
     X = np.log1p(R / tot * 1e4)
 
     obs = meta.set_index("sample_id").loc[samples].copy()
-    # ctrl 口径（论文同款 selectivity 对照）：只用 CONTROL ASO（浓度匹配、同转染流程）。
-    # 实测 CONTROL vs UTC 有大应激偏移（NDRG1 -3.0 / PSAP +2.5）——非靶向 ASO 转染
-    # 本身引起转录响应；UTC 混进 ctrl 会把转染应激泄进基线。治疗语义（in vivo 无
-    # 转染）下，扣除转染效应后的剩余响应才是序列特异敲低。
-    # UTC/OTHER -> condition="utc_ref"：不进 ctrl 池；load 后 resolve_pert_row 失败
-    # 会被 train_p3 安全跳过，不产生伪扰动。
+    # ctrl convention (the same selectivity control as the paper): use the
+    # CONTROL ASO only (concentration-matched, same transfection procedure).
+    # Measured CONTROL vs UTC shows a large stress shift (NDRG1 -3.0 /
+    # PSAP +2.5) -- transfecting a non-targeting ASO itself provokes a
+    # transcriptional response; mixing UTC into ctrl would leak transfection
+    # stress into the baseline. Under therapeutic semantics (no transfection
+    # in vivo), only the response remaining after the transfection effect is
+    # subtracted is sequence-specific knockdown.
+    # UTC/OTHER -> condition="utc_ref": they do not enter the ctrl pool; after
+    # loading, resolve_pert_row fails for them and train_p3 skips them safely,
+    # so no spurious perturbation is produced.
     is_actn1_high = (obs.aso_class == "ACTN1") & (obs.concentration_uM >= args.min_uM)
     obs["condition"] = np.where(is_actn1_high, "ACTN1",
                        np.where(obs.aso_class == "CONTROL", "ctrl", "utc_ref"))
@@ -236,13 +274,40 @@ def main():
     adata = ad.AnnData(X=X, obs=obs, var=pd.DataFrame(index=genes))
     full_fp = DIR / f"{args.out_prefix}_full.h5ad"
     adata.write_h5ad(full_fp)
-    # proc = full 的行子集（ACTN1 高浓度 + 全部 ctrl），无需拼接
-    keep = (adata.obs.condition != "ctrl") | (adata.obs.control == 1)
+    # proc: intended as a row subset of full (high-concentration ACTN1 + all
+    # ctrl). It has never actually been one.
+    #
+    # The historical mask is `(condition != "ctrl") | (control == 1)`. But
+    # `control == 1` holds for exactly the rows whose `condition == "ctrl"`
+    # (both derive from `aso_class == "CONTROL"` above), so the two terms cover
+    # every row and the mask is identically True. proc has therefore always been
+    # byte-identical to full, "utc_ref" rows included, and
+    # gse293987_proc.h5ad is not the filtered file its name and the docstring
+    # imply. Verified by enumerating every aso_class x concentration class.
+    #
+    # The default is left as the historical no-op so that re-running reproduces
+    # the file that downstream work already consumed; --proc_drop_utc_ref
+    # applies the filter that was intended. Either way the row counts are
+    # printed, so a no-op is visible rather than assumed.
+    if args.proc_drop_utc_ref:
+        keep = (adata.obs.condition == "ACTN1") | (adata.obs.control == 1)
+    else:
+        keep = (adata.obs.condition != "ctrl") | (adata.obs.control == 1)
+    n_keep = int(keep.values.sum())
+    if n_keep == adata.n_obs:
+        print(f"[warn] proc subset kept all {n_keep} rows: proc is identical to "
+              f"full. Pass --proc_drop_utc_ref to drop the {int((adata.obs.condition == 'utc_ref').sum())} "
+              f"'utc_ref' rows, which is what the subset was meant to do.",
+              flush=True)
+    else:
+        print(f"[proc] kept {n_keep}/{adata.n_obs} rows "
+              f"(dropped {adata.n_obs - n_keep} 'utc_ref')", flush=True)
     proc = adata[keep.values].copy()
     proc_fp = DIR / f"{args.out_prefix}_proc.h5ad"
     proc.write_h5ad(proc_fp)
     print(f"[done] full: {full_fp} {adata.shape} | proc: {proc_fp} {proc.shape} "
-          f"(ACTN1 扰动 {int(is_actn1_high.sum())} 样本, ctrl=CONTROL "
+          f"(ACTN1 perturbation {int(is_actn1_high.sum())} samples, "
+          f"ctrl=CONTROL "
           f"{int((obs.aso_class == 'CONTROL').sum())}, utc_ref "
           f"{int((obs.condition == 'utc_ref').sum())})", flush=True)
 

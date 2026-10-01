@@ -1,13 +1,29 @@
+# Pinned with lower bounds that were actually exercised. Upper bounds are left
+# open deliberately, but a reproduction run should record the resolved versions
+# (`pip freeze`) alongside its results -- the pre-v4 result files cannot be tied
+# to any specific environment.
+
 # core
 torch>=2.1
-numpy
-pandas
-scipy
-scikit-learn
-anndata
-h5py
-requests
-safetensors
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+scikit-learn>=1.3
+anndata>=0.10
+h5py>=3.8
+requests>=2.28
+safetensors>=0.4
 
-# optional: eval_headtohead.py / predict_service.py hybrid routing
-# xgboost
+# parquet I/O: every read_parquet/to_parquet call needs this. It was missing
+# from the pre-v4 requirements, so the ASO preprocessing chain failed on a
+# clean install.
+pyarrow>=14.0
+
+# efficacy line: the siRNAmod model and predict_service's optional routing.
+# xgboost was commented out pre-v4 even though a joblib artifact built with it
+# shipped in the repository and led the README.
+xgboost>=2.0
+joblib>=1.3
+
+# tests (python -m pytest tests/ -q); no data or model assets required
+pytest>=7.4

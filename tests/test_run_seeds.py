@@ -1,0 +1,237 @@
+"""Tests for multi-seed aggregation and the paired model-vs-baseline comparison.
+
+The point of pairing: model and baselines share a seed, hence a split, so the
+paired difference removes the split-to-split variance that dominates the marginal
+spread. On this data scale that variance is large enough to flip a verdict --
+which is exactly why single-seed point estimates were never sufficient.
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src" / "maprna_p3"))
+sys.path.insert(0, str(ROOT / "src"))
+
+from run_seeds import summarise  # noqa: E402
+
+
+def test_summarise_reports_mean_sd_range_and_ci():
+    s = summarise([0.10, 0.20, 0.30], "x")
+    assert s["n"] == 3
+    assert s["mean"] == pytest.approx(0.20)
+    assert s["sd"] == pytest.approx(np.std([0.1, 0.2, 0.3], ddof=1))
+    assert (s["min"], s["max"]) == (0.10, 0.30)
+    lo, hi = s["ci95_mean"]
+    assert lo < s["mean"] < hi
+
+
+def test_summarise_uses_the_sample_sd_not_the_population_sd():
+    """With n=3 the difference is ~22%, and the population form understates it."""
+    vals = [0.1, 0.2, 0.3]
+    s = summarise(vals, "x")
+    assert s["sd"] == pytest.approx(np.std(vals, ddof=1))
+    assert s["sd"] != pytest.approx(np.std(vals))
+
+
+def test_summarise_drops_none_and_nan():
+    s = summarise([0.1, None, float("nan"), 0.3], "x")
+    assert s["n"] == 2
+    assert s["mean"] == pytest.approx(0.2)
+
+
+def test_summarise_handles_a_single_seed_without_inventing_a_spread():
+    s = summarise([0.42], "x")
+    assert s["n"] == 1 and s["sd"] is None and s["ci95_mean"] is None
+
+
+def test_summarise_of_nothing_is_empty_not_an_error():
+    assert summarise([None, float("nan")], "x")["n"] == 0
+
+
+# --------------------------------------------------------------------------
+# the paired comparison, exercised through the script
+# --------------------------------------------------------------------------
+
+def _fake_reports(tmp_path, per_seed):
+    """Write final_report.json files as train_p3 would, then aggregate them."""
+    for s, (model, knn) in per_seed.items():
+        d = tmp_path / f"seed{s}"
+        d.mkdir(parents=True)
+        (d / "final_report.json").write_text(json.dumps({
+            "pearson_dev": model, "selected_epoch": 3, "split_by": "target_gene",
+            # copied from what train_p3 actually writes: a report that does not
+            # name its estimator cannot be compared with anything (ERRATA E4)
+            "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r",
+            "baselines": {"knn_esm2": {"pearson_dev": knn},
+                          "zero": {"pearson_dev": 0.0}}}))
+    out = tmp_path / "summary.json"
+    p = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "maprna_p3" / "run_seeds.py"),
+         "--seeds", *[str(s) for s in per_seed], "--out_dir", str(tmp_path),
+         "--skip_existing", "--summary_json", str(out)],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0, p.stdout + p.stderr
+    return json.loads(out.read_text()), p.stdout
+
+
+def test_consistent_win_is_reported_as_such(tmp_path):
+    rep, log = _fake_reports(tmp_path, {0: (0.30, 0.10), 1: (0.28, 0.12),
+                                        2: (0.33, 0.09)})
+    d = rep["paired_vs_baselines"]["knn_esm2"]
+    assert d["seeds_where_model_wins"] == 3
+    assert "every seed" in d["verdict"]
+    assert d["mean_difference"] > 0
+
+
+def test_consistent_loss_is_reported_and_warned_about(tmp_path):
+    rep, log = _fake_reports(tmp_path, {0: (0.05, 0.20), 1: (0.04, 0.18),
+                                        2: (0.06, 0.22)})
+    d = rep["paired_vs_baselines"]["knn_esm2"]
+    assert d["seeds_where_model_wins"] == 0
+    assert "loses" in d["verdict"]
+    assert "loses on EVERY seed" in log
+
+
+def test_a_mixed_result_is_not_rounded_into_a_win(tmp_path):
+    """The case a single seed would misreport either way.
+
+    Here the mean paired difference is positive, but the model loses on one of
+    three seeds. Reporting only the mean would read as a win.
+    """
+    rep, _ = _fake_reports(tmp_path, {0: (0.20, 0.05), 1: (0.08, 0.12),
+                                      2: (0.18, 0.07)})
+    d = rep["paired_vs_baselines"]["knn_esm2"]
+    assert d["mean_difference"] > 0
+    assert d["seeds_where_model_wins"] == 2
+    assert d["verdict"].startswith("mixed")
+
+
+def test_paired_ci_can_exclude_zero_where_the_marginal_intervals_overlap(tmp_path):
+    """Why pairing is the right test.
+
+    Model and baseline both swing widely across seeds (their marginal intervals
+    overlap heavily), but within each seed the model is consistently ahead by a
+    similar margin. The paired CI sees that; comparing marginals would not.
+    """
+    rep, _ = _fake_reports(tmp_path, {0: (0.50, 0.44), 1: (0.20, 0.14),
+                                      2: (0.35, 0.29), 3: (0.10, 0.04)})
+    m, b = rep["model"], rep["baselines"]["knn_esm2"]
+    assert m["ci95_mean"][0] < b["ci95_mean"][1], "marginal intervals should overlap"
+    lo, hi = rep["paired_vs_baselines"]["knn_esm2"]["ci95_mean_difference"]
+    assert lo > 0, "the paired difference should be clearly positive"
+
+
+def test_summary_records_the_split_and_the_selected_epochs(tmp_path):
+    rep, _ = _fake_reports(tmp_path, {0: (0.1, 0.0), 1: (0.2, 0.0)})
+    assert rep["split_by"] == ["target_gene"]
+    assert rep["selected_epochs"] == [3, 3]
+    assert rep["n_seeds"] == 2
+    assert "provenance" in rep
+
+
+def test_forwarding_a_banned_argument_is_refused():
+    """--seed and --out_dir are set per run; silently ignoring them would make
+    every seed write to the same place."""
+    p = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", "/tmp/x", "--", "--seed", "3"],
+        capture_output=True, text=True, timeout=120)
+    assert p.returncode != 0
+    assert "set per run" in (p.stdout + p.stderr)
+
+
+def test_it_refuses_to_average_seeds_run_under_different_protocols(tmp_path):
+    """Aggregating seeds that used different panels averages two experiments.
+
+    run_seeds normally launches the seeds itself, so they agree by construction --
+    but with --skip_existing it reuses whatever reports are already on disk, and
+    those can come from anywhere. A mean over a 500-gene run and a 2000-gene run
+    is not a mean of anything.
+    """
+    root = Path(__file__).resolve().parents[1]
+    for seed, n_hvg in ((0, 500), (1, 2000)):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.1 + seed * 0.01, split_by="target_gene", selected_epoch=3,
+            pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r",
+            baselines=dict(zero=dict(pearson_dev=0.0)),
+            provenance=dict(args=dict(n_hvg=n_hvg, split_by="target_gene",
+                                      data_dirs=["a.h5ad"], hvg_from="train",
+                                      min_cells=1, test_frac=0.15, epochs=3)))))
+    p = subprocess.run(
+        [sys.executable, str(root / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing"],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0, p.stdout
+    assert "not run under the same protocol" in (p.stdout + p.stderr)
+    assert "n_hvg" in (p.stdout + p.stderr)
+
+
+def test_matching_seeds_are_aggregated_and_the_protocol_is_stated_once(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    for seed in (0, 1):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.10 + seed * 0.02, split_by="target_gene", selected_epoch=3,
+            pearson_dev_estimator="mean_over_perturbations_of_within_perturbation_r",
+            baselines=dict(zero=dict(pearson_dev=0.0),
+                           knn_esm2=dict(pearson_dev=0.20)),
+            provenance=dict(args=dict(n_hvg=500, split_by="target_gene",
+                                      data_dirs=["a.h5ad"], hvg_from="train",
+                                      min_cells=1, test_frac=0.15, epochs=3)))))
+    out = tmp_path / "summary.json"
+    p = subprocess.run(
+        [sys.executable, str(root / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing",
+         "--summary_json", str(out)],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0, p.stdout + p.stderr
+    rep = json.loads(out.read_text())
+    assert rep["protocol"]["n_hvg"] == 500
+    assert rep["protocol"]["split_by"] == "target_gene"
+    # and the honest verdict is still reported
+    assert rep["paired_vs_baselines"]["knn_esm2"]["verdict"] == \
+        "model loses to this baseline on every seed"
+
+
+def test_it_refuses_seeds_that_do_not_name_their_estimator(tmp_path):
+    """A mean whose estimator is unknown cannot be compared with anything, which
+    is what made ERRATA E4 possible: two definitions of pearson_dev were
+    subtracted from one another because neither number carried its definition."""
+    for seed in (0, 1):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.1, split_by="target_gene", selected_epoch=3,
+            baselines=dict(zero=dict(pearson_dev=0.0)),
+            provenance=dict(args=dict(n_hvg=500)))))
+    p = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing"],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0
+    assert "estimator" in (p.stdout + p.stderr)
+
+
+def test_it_refuses_seeds_that_used_different_estimators(tmp_path):
+    for seed, est in ((0, "mean_over_perturbations_of_within_perturbation_r"), (1, "pooled")):
+        d = tmp_path / f"seed{seed}"
+        d.mkdir()
+        (d / "final_report.json").write_text(json.dumps(dict(
+            pearson_dev=0.1, split_by="target_gene", selected_epoch=3,
+            pearson_dev_estimator=est,
+            baselines=dict(zero=dict(pearson_dev=0.0)),
+            provenance=dict(args=dict(n_hvg=500)))))
+    p = subprocess.run(
+        [sys.executable, str(ROOT / "src" / "maprna_p3" / "run_seeds.py"),
+         "--out_dir", str(tmp_path), "--seeds", "0", "1", "--skip_existing"],
+        capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0
+    assert "E4" in (p.stdout + p.stderr)

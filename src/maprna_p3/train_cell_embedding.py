@@ -1,17 +1,24 @@
 #!/usr/bin/env python
-"""V2-2 重开（Route A）：set-encoder cell-state embedding（panel 无关）。
+"""V2-2 re-opened (Route A): set-encoder cell-state embedding (panel-agnostic).
 
-与 v1 版（已 FAIL 关线）的根本区别：v1 用"6 语境 panel 交集"（312 基因）构建
-profile 向量——交集过小导致 zero-shot 与 fallback 双双失效。Route A 改为
-(基因身份, 表达值) 集合编码：每个语境贡献它测过的基因（ESM2 emb ⊕ z-score）
-→ attention 池化 → 64d 嵌入。缺失基因只是不贡献，panel 差异不再是约束。
-响应 panel 回到生产口径：make_hvg_list 跨数据集 2000 HVG（与 train_p3 同款）。
+The fundamental difference from the v1 version (already FAILed and shut down):
+v1 built the profile vector from the "intersection of the 6 context panels"
+(312 genes) -- the intersection was so small that both zero-shot and fallback
+failed. Route A switches to a (gene identity, expression value) set encoding:
+every context contributes the genes it measured (ESM2 emb ⊕ z-score) →
+attention pooling → a 64d embedding. A missing gene simply does not contribute,
+so panel differences are no longer a constraint. The response panel goes back to
+the production convention: make_hvg_list, 2000 HVG across datasets (the same as
+train_p3).
 
-重新预注册判据（hepg2 holdout，FAIL = 永久关闭，无第二次重开）：
-  zero_shot pearson_dev - fallback pearson_dev >= +0.02 且 zero_shot > 0.15
-  fallback 基线 = encoder 判定的最近训练语境的离散 ds_emb 直抄。
+Re-pre-registered criterion (hepg2 holdout; FAIL = permanently closed, there is
+no second re-opening):
+  zero_shot pearson_dev - fallback pearson_dev >= +0.02 and zero_shot > 0.15
+  the fallback baseline = copying verbatim the discrete ds_emb of the nearest
+  training context as judged by the encoder.
 
-用法（GPU 机，$BASE/src/ 平铺布局；本地 maprna_p1/p3 兄弟目录兼容）：
+Usage (GPU box, flat $BASE/src/ layout; compatible with the local
+maprna_p1/p3 sibling directories):
   python train_cell_embedding.py \
       --data_dirs adamson/perturb_processed.h5ad norman/perturb_processed.h5ad \
                  replogle_rpe1_essential/perturb_processed.h5ad \
@@ -21,7 +28,7 @@ profile 向量——交集过小导致 zero-shot 与 fallback 双双失效。Rou
       --context_names k562a norman rpe1 k562g jurkat hepg2 \
       --esm_table Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt \
       --holdout hepg2 --out_dir $BASE/cell_emb_v2_hepg2
-冒烟：--epochs 2 --max_items 300
+Smoke test: --epochs 2 --max_items 300
 """
 import argparse
 import json
@@ -37,7 +44,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 _HERE = os.path.abspath(HERE)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-# 本地 repo 布局：maprna_p1/p2/p3 兄弟目录（GPU 平铺 src/ 时 is_dir 守卫跳过）
+# Local repo layout: maprna_p1/p2/p3 sibling directories (with the flat src/
+# layout on the GPU box the is_dir guard skips them)
 for _sib in ("maprna_p1", "maprna_p2", "maprna_p3"):
     _p = os.path.abspath(os.path.join(HERE, "..", _sib))
     if os.path.isdir(_p) and _p not in sys.path:
@@ -53,9 +61,11 @@ D_MODEL = 256
 
 
 class CellStateEncoder(nn.Module):
-    """Route A set-encoder：(ESM2 emb, z-score expr) 基因集合 -> attention 池化 -> d_cell。
+    """Route A set-encoder: a gene set of (ESM2 emb, z-score expr) -> attention
+    pooling -> d_cell.
 
-    panel 无关：每个语境只贡献它测过的基因；缺失基因不参与池化。
+    Panel-agnostic: every context contributes only the genes it measured;
+    missing genes do not take part in the pooling.
     """
 
     def __init__(self, esm_dim, d_model=D_MODEL, d_cell=D_CELL):
@@ -68,7 +78,7 @@ class CellStateEncoder(nn.Module):
             nn.Linear(256, d_cell), nn.GELU())
 
     def forward(self, esm_table, rows_t, z_t):
-        """esm_table [V, esm_dim]; rows_t [n_panel] long; z_t [n_panel] float。"""
+        """esm_table [V, esm_dim]; rows_t [n_panel] long; z_t [n_panel] float."""
         e = self.proj_esm(esm_table[rows_t])                  # [n_panel, d_model]
         h = self.inp(torch.cat([e, z_t.unsqueeze(-1)], dim=-1))
         a = torch.softmax(self.attn_v(torch.tanh(h)), dim=0)  # [n_panel, 1]
@@ -76,11 +86,13 @@ class CellStateEncoder(nn.Module):
 
 
 class CellEmbDeviationModel(DeviationModel):
-    """cell_emb 替换 ds one-hot 的 DeviationModel 子类（最小侵入）。"""
+    """DeviationModel subclass in which cell_emb replaces the ds one-hot
+    (minimally invasive).
+    """
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
-        self.ds_proj = nn.Linear(D_CELL, DS_EMB)              # d_cell -> DS_EMB 槽位
+        self.ds_proj = nn.Linear(D_CELL, DS_EMB)              # d_cell -> DS_EMB slot
 
     def forward(self, pert_rows, ds_idx, ctrl_feat, rna_emb=None,
                 pert_esm_override=None, pert_ctrl_expr=None, cell_emb=None):
@@ -88,7 +100,8 @@ class CellEmbDeviationModel(DeviationModel):
         dev = self.esm_table.device
         if cell_emb is not None:
             ds_onehot = self.ds_proj(cell_emb.to(dev))        # [Bp, DS_EMB]
-        else:  # fallback 基线：直抄最近训练语境的离散 ds_emb
+        else:  # fallback baseline: verbatim discrete ds_emb of the nearest
+               # training context
             ds_onehot = self.ds_emb(ds_idx.to(dev))
 
         ctrl_feat = ctrl_feat.to(dev)
@@ -129,7 +142,9 @@ def main():
     ap.add_argument("--context_names", nargs="+", required=True)
     ap.add_argument("--esm_table", required=True)
     ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--holdout", default="", help="留出语境名；空 = 全语境训练")
+    ap.add_argument("--holdout", default="",
+                    help="name of the held-out context; empty = train on all "
+                         "contexts")
     ap.add_argument("--n_hvg", type=int, default=2000)
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch_size", type=int, default=16)
@@ -137,7 +152,8 @@ def main():
     ap.add_argument("--min_cells", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max_items", type=int, default=0,
-                    help="冒烟用：截断训练 item 数（0=全量）")
+                    help="for smoke tests: truncate the number of training "
+                         "items (0=all)")
     args = ap.parse_args()
     assert len(args.data_dirs) == len(args.context_names)
 
@@ -147,14 +163,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     t0 = time.time()
 
-    # ---- 一次性加载全部语境（生产语义）----
+    # ---- load every context in one go (production semantics) ----
     sym2row, _ = build_symbol2row(args.esm_table)
     sym_by_row = {int(r): s for s, r in sym2row.items()}
     kd = load_kd_datasets(args.data_dirs, sym2row, min_cells=args.min_cells)
     n_ds = len(kd["X_ctrl"])
     assert n_ds == len(args.context_names)
 
-    # 每语境：panel 行（ESM rows）、sym2col、ctrl 均值、z-score、item 列表
+    # per context: panel rows (ESM rows), sym2col, ctrl mean, z-score, item list
     ctx = []
     for di in range(n_ds):
         rows = [int(r) for r in kd["row_of_gene"][di]]
@@ -163,11 +179,13 @@ def main():
             s = sym_by_row.get(r)
             if s is not None:
                 sym2col[s] = i
-        # rows/z/sym2col 三者必须同口径（仅限 ESM 表覆盖的 panel 子集）
+        # rows/z/sym2col must all be on the same convention (restricted to the
+        # panel subset covered by the ESM table)
         panel_syms = list(sym2col.keys())
         rows = [sym2row[s] for s in panel_syms]
         cm = np.asarray(kd["X_ctrl"][di].mean(axis=0), dtype=np.float32)
-        v = cm[[sym2col[s] for s in sym2col]]                 # panel 内值（列对齐）
+        v = cm[[sym2col[s] for s in sym2col]]                 # in-panel values
+                                                              # (column-aligned)
         z = (v - v.mean()) / (v.std() + 1e-6)
         cp = kd["pert_labels"][di]
         items = []
@@ -186,16 +204,17 @@ def main():
         print(f"[ctx] {args.context_names[di]}: {len(items)} perts | panel {len(rows)}",
               flush=True)
 
-    # ---- 响应 panel：生产口径（跨数据集 HVG，未测基因记 0，同 train_p3）----
+    # ---- response panel: production convention (HVG across datasets,
+    # unmeasured genes recorded as 0, same as train_p3) ----
     hvg_rows = [int(r) for r in make_hvg_list(kd, n_hvg=args.n_hvg)]
     hvg_col_per_ds = []
     for di in range(n_ds):
         r2c = {int(r): c for c, r in enumerate(kd["row_of_gene"][di])}
         hvg_col_per_ds.append(np.array([r2c.get(hr, -1) for hr in hvg_rows],
                                        dtype=np.int64))
-    print(f"[data] response panel: {len(hvg_rows)} HVG (跨数据集)", flush=True)
+    print(f"[data] response panel: {len(hvg_rows)} HVG (across datasets)", flush=True)
 
-    # ---- ctrl 特征（train_p3 同款：dataset 内 z-score）----
+    # ---- ctrl features (same as train_p3: within-dataset z-score) ----
     ctrl_mean = np.zeros((n_ds, len(hvg_rows)), dtype=np.float32)
     for di in range(n_ds):
         cm = kd["X_ctrl"][di].mean(axis=0)
@@ -207,7 +226,7 @@ def main():
     sd = ctrl_mean.std(axis=1, keepdims=True) + 1e-6
     ctrl_feat_all = (ctrl_mean - mu) / sd
 
-    # ---- 训练 items（LOCO 排除 holdout）----
+    # ---- training items (LOCO excludes the holdout) ----
     tr_di, tr_cond, tr_mean = [], [], []
     holdout_di = None
     for di, cd in enumerate(ctx):
@@ -221,7 +240,8 @@ def main():
     print(f"[data] train perts {len(tr_cond)} | holdout: "
           f"{args.holdout or 'none'}", flush=True)
     if not tr_cond:
-        raise RuntimeError("训练 items 为空（holdout 排除了全部语境？）")
+        raise RuntimeError("training items are empty (did the holdout exclude "
+                           "every context?)")
     if args.max_items and args.max_items < len(tr_cond):
         rng = np.random.default_rng(args.seed)
         keep = sorted(rng.choice(len(tr_cond), args.max_items, replace=False))
@@ -230,7 +250,7 @@ def main():
         tr_mean = [tr_mean[i] for i in keep]
         print(f"[data] smoke: truncated to {len(tr_cond)} items", flush=True)
 
-    # ---- 残差目标（train-only common core，同 train_p3）----
+    # ---- residual targets (train-only common core, same as train_p3) ----
     def targets_of(idxs):
         T = np.zeros((len(idxs), len(hvg_rows)), dtype=np.float32)
         rows_p = np.zeros(len(idxs), dtype=np.int64)
@@ -256,7 +276,8 @@ def main():
     print(f"[P2.3-B] common fc (train-only): std={common_fc.std():.4f} "
           f"max|.|={np.abs(common_fc).max():.4f}", flush=True)
 
-    # ---- v2-1a 门控：每 item 标量（靶基因在其语境的 ctrl 表达）----
+    # ---- v2-1a gating: one scalar per item (the ctrl expression of the
+    # target gene in its own context) ----
     pe_list, pe_in_panel = [], 0
     for k, r in enumerate(rows_tr):
         di = tr_di[k]
@@ -266,10 +287,11 @@ def main():
             pe_in_panel += 1
         else:
             pe_list.append(0.0)
-    print(f"[v2-1a] 靶基因在语境 panel 内 {pe_in_panel}/{len(pe_list)} | "
+    print(f"[v2-1a] target gene inside the context panel "
+          f"{pe_in_panel}/{len(pe_list)} | "
           f"expr median {np.median(pe_list):.3f}", flush=True)
 
-    # ---- 模型 ----
+    # ---- model ----
     esm = load_esm_matrix(args.esm_table)
     model = CellEmbDeviationModel(esm, hvg_rows, n_ds=max(2, n_ds)).to(device)
     cell_enc = CellStateEncoder(esm.shape[1]).to(device)
@@ -278,7 +300,7 @@ def main():
     print(f"[model] params {n_par/1e6:.2f}M | d_cell {D_CELL} | hvg {len(hvg_rows)}",
           flush=True)
 
-    # 每语境常量张量（panel ESM 行索引 + z）
+    # per-context constant tensors (panel ESM row indices + z)
     ctx_rows_t = [torch.tensor(cd["rows"], dtype=torch.long).to(device) for cd in ctx]
     ctx_z_t = [torch.from_numpy(cd["z"]).float().to(device) for cd in ctx]
 
@@ -286,7 +308,9 @@ def main():
         embs = [cell_enc(model.esm_table, ctx_rows_t[di], ctx_z_t[di]) for di in range(n_ds)]
         return torch.stack(embs)                              # [n_ds, d_cell]
 
-    P_emb = ctx_embs().detach()                               # 初始（相关性参考用）
+    P_emb = ctx_embs().detach()                               # initial (used as
+                                                              # a correlation
+                                                              # reference)
     C = np.corrcoef(P_emb.cpu().numpy())
     print("[ctx] cell-embedding correlation matrix (init):", flush=True)
     print(np.round(C, 2), flush=True)
@@ -306,7 +330,9 @@ def main():
         perm = torch.randperm(n)
         for lo in range(0, n, args.batch_size):
             idx = perm[lo:lo + args.batch_size]
-            embs = ctx_embs()                                 # 每步重算（参数在更新）
+            embs = ctx_embs()                                 # recomputed every
+                                                              # step (the params
+                                                              # are updating)
             pred = model(pr_t[idx], di_t[idx], cf_t[idx],
                          pert_ctrl_expr=pe_t[idx],
                          cell_emb=embs[di_t[idx]])
@@ -322,7 +348,7 @@ def main():
             with torch.no_grad():
                 embs = ctx_embs()
                 outs = []
-                for lo in range(0, n, 256):                   # 分块：防 OOM
+                for lo in range(0, n, 256):                   # chunked: avoids OOM
                     hi = min(lo + 256, n)
                     outs.append(model(pr_t[lo:hi], di_t[lo:hi], cf_t[lo:hi],
                                       pert_ctrl_expr=pe_t[lo:hi],
@@ -339,7 +365,8 @@ def main():
                 "context_names": args.context_names},
                os.path.join(args.out_dir, "ckpt_cell_emb.pt"))
 
-    # ---- LOCO 评估：zero-shot vs 最近语境 fallback（生产 2000-HVG 空间）----
+    # ---- LOCO evaluation: zero-shot vs nearest-context fallback (in the
+    # production 2000-HVG space) ----
     results = {}
     if holdout_di is not None:
         cd = ctx[holdout_di]
@@ -352,9 +379,11 @@ def main():
         nearest, sim = max(sims, key=lambda x: x[1])
         nj = args.context_names.index(nearest)
         print(f"[loco] holdout {cd['name']} | nearest context: {nearest} "
-              f"(emb cos={sim:.2f})", flush=True)
+              f"(emb pearson_r={sim:.2f})", flush=True)   # np.corrcoef, NOT a cosine:
+              # cosine does not centre, Pearson does, and the two differ for
+              # these embeddings. The label said "cos" up to v4.
 
-        # holdout items 的真值（同协议）
+        # ground truth of the holdout items (same protocol)
         cp = kd["pert_labels"][holdout_di]
         h_items = [(cond, np.where(cp == cond)[0]) for cond, _ in cd["items"]]
         r2c = {int(r): c for c, r in enumerate(kd["row_of_gene"][holdout_di])}
@@ -362,7 +391,8 @@ def main():
         cf_h = ctrl_feat_all[holdout_di]
 
         def eval_ctx(mode):
-            # 批量组装 holdout 全部 item（逐 item 循环太慢且易挂）
+            # assemble all holdout items in a batch (looping item by item is
+            # too slow and prone to hanging)
             prs, pes, tvs = [], [], []
             for cond, ii in h_items:
                 row = resolve_pert_row(sym2row, cond)
@@ -390,7 +420,7 @@ def main():
                     hi = min(lo + 256, len(prs))
                     kw = {"pert_ctrl_expr": pe_t_h[lo:hi]}
                     if mode == "zero_shot":
-                        kw["cell_emb"] = emb.expand(hi - lo, -1)   # 对齐 chunk 批
+                        kw["cell_emb"] = emb.expand(hi - lo, -1)   # align to the chunk batch
                     outs.append(model(pr_t_h[lo:hi], di_v[lo:hi], cf_v.expand(hi - lo, -1),
                                       **kw).cpu().numpy())
             P_pred = np.concatenate(outs)
@@ -404,11 +434,13 @@ def main():
         zs, n_zs = eval_ctx("zero_shot")
         fb, _ = eval_ctx("fallback")
         results = dict(holdout=cd["name"], nearest=nearest, nearest_sim=sim,
+                       nearest_sim_metric="pearson_r_between_dataset_embeddings",
                        zero_shot_pearson_dev=zs, fallback_pearson_dev=fb,
                        delta=zs - fb, n_eval=n_zs, n_hvg=len(hvg_rows),
                        gate="PASS" if (zs - fb >= 0.02 and zs > 0.15) else "FAIL",
-                       gate_rule="zero-shot - fallback >= +0.02 且 zero-shot > 0.15；"
-                                 "FAIL = 永久关闭（Route A 已消除数据条件借口）")
+                       gate_rule="zero-shot - fallback >= +0.02 and zero-shot > 0.15; "
+                                 "FAIL = permanently closed (Route A has already "
+                                 "removed the data-conditions excuse)")
         print(json.dumps(results, indent=2, ensure_ascii=False), flush=True)
     json.dump(results, open(os.path.join(args.out_dir, "loco_results.json"), "w"),
               indent=2, ensure_ascii=False)

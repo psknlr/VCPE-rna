@@ -1,13 +1,14 @@
-"""L2-1: MLM pretraining of the ~100M RNA encoder (VCPE-rna L2 专项).
+"""L2-1: MLM pretraining of the ~100M RNA encoder (VCPE-rna L2 dedicated project).
 
 Architecture: encoder-only, d768 x 12 layers x 12 heads, FFN 3072 (~100M),
 single-nucleotide vocab 8 (PAD/A/C/G/U/N/CLS + MASK), max_len 512.
 Objective: BERT-style MLM, 15% corruption (80/10/10), loss on masked positions.
 
-Engineering (per L2 立项书):
-  - 断点续训: ckpt + optimizer + scheduler + step every --save_steps (2000),
-    auto-resume from l2_ckpt_latest.pt
-  - 长度分桶: rows sorted by length, batch = similar-length rows, dynamic pad
+Engineering (per docs/PLAN.md, "L2 Encoder Expansion Kickoff"):
+  - checkpoint resume: ckpt + optimizer + scheduler + step every
+    --save_steps (2000), auto-resume from l2_ckpt_latest.pt
+  - length bucketing: rows sorted by length, batch = similar-length rows,
+    dynamic pad
   - bf16 autocast + grad accumulation
   - stop: epochs exhausted OR --max_hours reached OR val plateau
     (3 consecutive evals with relative improvement < 2%)
@@ -74,7 +75,8 @@ class L2Encoder(nn.Module):
 # ---------------- data ----------------
 class TokenStore:
     def __init__(self, store_dir):
-        # l2_tokens.u16 是裸二进制（tokenize_store 直接 tobytes 写出），用 memmap 裸读
+        # l2_tokens.u16 is raw binary (tokenize_store writes it straight out
+        # with tobytes), so read it raw via memmap
         self.tokens = np.memmap(store_dir + "/l2_tokens.u16", dtype=np.uint16, mode="r")
         self.offsets = np.load(store_dir + "/l2_offsets.npy")
         self.n = len(self.offsets) - 1

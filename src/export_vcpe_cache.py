@@ -96,9 +96,13 @@ def main():
     ctrl_hvg = np.mean(np.stack(ctrl_hvg_ds), axis=0)
 
     # ---- control sentences: REAL control cells (training-distribution input) ----
-    # P1/P2 训练与评估的控制句都是单个真实控制细胞的 top-expressed 谱；全局均值谱是
-    # 分布外输入，会让预测退化成均值回归（2026-09-02 抽检实测：fc 幅值塌缩 50 倍、
-    # 不同扰动响应雷同）。因此固定用 K562（adamson，训练分布内）真实控制细胞。
+    # The control sentences used in P1/P2 training and evaluation are always
+    # the top-expressed profile of a single real control cell; a global mean
+    # profile is an out-of-distribution input and makes the prediction
+    # degenerate into mean regression (spot-check measured 2026-09-02: fc
+    # magnitude collapsed 50x, responses to different perturbations all alike).
+    # Therefore fix on real K562 control cells (adamson, inside the training
+    # distribution).
     rng_ctrl = np.random.default_rng(args.seed + 1)
     di0 = 0  # adamson = K562
     rows0 = kd["row_of_gene"][di0]
@@ -226,7 +230,8 @@ def main():
     print(f"✅ wrote {args.out} ({sz:.1f} MB): {len(genes)} genes, "
           f"top_k={args.top_k}, common core subtracted", flush=True)
     print("Platform swap: replace aido_vc_cache.json.gz with this file "
-          "+ update attribution strings (see P3_接入分析.md).", flush=True)
+          "+ update attribution strings "
+          "(see docs/reports/p3_platform_integration.md).", flush=True)
 
 
 if __name__ == "__main__":

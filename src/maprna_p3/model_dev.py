@@ -56,7 +56,13 @@ class DeviationModel(nn.Module):
                  rna_encoder=None, rna_d_model=256, dropout=0.1):
         super().__init__()
         esm_matrix = esm_matrix.float()
-        self.register_buffer("esm_table", esm_matrix)          # [V, esm_dim] frozen
+        # persistent=False: the ESM2 table is a frozen copy of a public lookup
+        # table supplied at construction time. Persisting it wrote ~405 MB of
+        # redundant bytes into every checkpoint (the released 428 MB P3
+        # checkpoint is ~23 MB of parameters plus this table), and a stale copy
+        # inside a checkpoint can silently disagree with the table on disk.
+        # maprna_p1/model_kd.py already did this correctly.
+        self.register_buffer("esm_table", esm_matrix, persistent=False)  # [V, esm_dim]
         self.register_buffer("hvg_rows", torch.as_tensor(hvg_rows).long())
         self.esm_dim = esm_matrix.shape[1]
         self.n_hvg = len(hvg_rows)
@@ -83,13 +89,28 @@ class DeviationModel(nn.Module):
         return self.rna_encoder(rna_tokens, rna_mask)           # [Bp, rna_d]
 
     def forward(self, pert_rows, ds_idx, ctrl_feat, rna_emb=None,
-                pert_esm_override=None, pert_ctrl_expr=None):
+                pert_esm_override=None, pert_ctrl_expr=None,
+                is_tgt_override=None, is_nb_override=None):
         """pert_rows [Bp] long; ds_idx [Bp] long; ctrl_feat [Bp, n_hvg] float.
 
         pert_esm_override: [Bp, esm_dim] replacement for the target ESM2 vector
         (ablation entry: zeros / shuffled rows).
         pert_ctrl_expr: [Bp] float, RAW log1p ctrl expression of the target gene
         (v2-1a self-response gate; None = gate off, backward compatible).
+
+        is_tgt_override / is_nb_override: [Bp, n_hvg] replacements for the
+        "this gene is the target" and "this gene is a STRING neighbour of the
+        target" indicator features. These exist because perturbation identity
+        reaches the model through FOUR channels -- the target ESM2 vector, the
+        RNA sequence embedding, and these two indicators -- so overriding the
+        ESM2 vector alone does not switch conditioning off. The P2.3-B report
+        acknowledged this ("the neighbor/self indicator features still carry
+        perturbation identity; per-axis ablation is future work") but no hook
+        existed to test it. See ablate_axes.py.
+
+        Note: the v2-1a expression gate stays keyed to the TRUE is_target, since
+        it is a structural post-hoc prior rather than a conditioning channel.
+        Ablating the indicator feature must not silently also move the gate.
         """
         Bp = pert_rows.shape[0]
         dev = self.esm_table.device
@@ -119,6 +140,11 @@ class DeviationModel(nn.Module):
         else:
             is_nb = torch.zeros(Bp, self.n_hvg, dtype=torch.bool, device=dev)
         is_tgt = (pert_rows.unsqueeze(-1) == self.hvg_rows.view(1, -1))           # [Bp, n_hvg]
+        is_tgt_true = is_tgt                       # kept for the gate, never ablated
+        if is_tgt_override is not None:
+            is_tgt = is_tgt_override.to(dev)
+        if is_nb_override is not None:
+            is_nb = is_nb_override.to(dev)
         ds_onehot = self.ds_emb(ds_idx)                                           # [Bp, DS_EMB]
 
         feats = [ctrl_feat.unsqueeze(-1),
@@ -132,9 +158,44 @@ class DeviationModel(nn.Module):
         # expr <= 0.1 (log1p) -> gate ~0.05; expr >= 1.3 -> gate ~0.97.
         if pert_ctrl_expr is not None:
             gate = torch.sigmoid((pert_ctrl_expr.to(dev) - GATE_TAU) * GATE_SLOPE)  # [Bp]
-            out = out * (1.0 - is_tgt.float() * (1.0 - gate).unsqueeze(-1))
+            out = out * (1.0 - is_tgt_true.float() * (1.0 - gate).unsqueeze(-1))
         return out
+
+    def indicator_features(self, pert_rows):
+        """Return the (is_neighbor, is_target) indicator matrices the forward pass
+        would build for `pert_rows`. Exposed so that ablations can permute them
+        across perturbations rather than reconstructing the logic."""
+        dev = self.esm_table.device
+        pert_rows = pert_rows.to(dev)
+        Bp = pert_rows.shape[0]
+        nb = self.neighbor_table[pert_rows] \
+            if getattr(self, "neighbor_table", None) is not None \
+            else torch.full((Bp, 0), -1, device=dev, dtype=torch.long)
+        if nb.shape[1] > 0:
+            is_nb = (nb.unsqueeze(-1) == self.hvg_rows.view(1, 1, -1)).any(dim=1)
+        else:
+            is_nb = torch.zeros(Bp, self.n_hvg, dtype=torch.bool, device=dev)
+        is_tgt = (pert_rows.unsqueeze(-1) == self.hvg_rows.view(1, -1))
+        return is_nb, is_tgt
 
     def set_neighbor_table(self, table_np, device):
         import numpy as np
         self.neighbor_table = torch.from_numpy(np.asarray(table_np)).long().to(device)
+
+
+def load_dev_state(model, ck, strict=True):
+    """Load a DeviationModel state dict, tolerating pre-v4 checkpoints.
+
+    Checkpoints written before the `persistent=False` fix embed a full copy of
+    the frozen ESM2 table (~405 MB of a 428 MB file). The table is supplied at
+    construction time now, so a persisted copy is both redundant and a
+    correctness hazard -- it can disagree with the table the caller passed in.
+    Drop it and load the parameters only.
+    """
+    sd = ck["model_state_dict"] if "model_state_dict" in ck else ck
+    stale = [k for k in sd if k == "esm_table"]
+    sd = {k: v for k, v in sd.items() if k != "esm_table"}
+    if stale:
+        print("[model_dev] checkpoint carries a persisted esm_table; ignoring it "
+              "and using the table passed to the constructor.", flush=True)
+    return model.load_state_dict(sd, strict=strict)

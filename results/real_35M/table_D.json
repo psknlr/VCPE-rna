@@ -1,0 +1,140 @@
+{
+  "metric": "pearson_dev",
+  "shared_protocol": {
+    "data_dirs": [
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+    ],
+    "n_hvg": 500,
+    "hvg_from": "train",
+    "split_by": "target_gene",
+    "test_frac": 0.15,
+    "min_cells": 1,
+    "seed": [
+      0
+    ],
+    "use_mask": true,
+    "esm_table": "/home/user/data_real/esm2_35M_human.pt"
+  },
+  "rows": [
+    {
+      "label": "CPA",
+      "value": 0.018047151126805158,
+      "n": 1,
+      "sd": null,
+      "lo": null,
+      "hi": null,
+      "estimator": "mean_over_perturbations_of_within_perturbation_r",
+      "kind": "single run",
+      "source": "D_cpa.json"
+    },
+    {
+      "label": "P3 head",
+      "value": 0.002561430793207597,
+      "n": 1,
+      "estimator": "mean_over_perturbations_of_within_perturbation_r",
+      "kind": "single run",
+      "source": "final_report.json"
+    },
+    {
+      "label": "zero",
+      "value": 0.0,
+      "n": 1,
+      "kind": "deterministic control",
+      "source": "final_report.json"
+    },
+    {
+      "label": "train_mean",
+      "value": -0.00233386210467058,
+      "n": 1,
+      "kind": "deterministic control",
+      "source": "final_report.json"
+    },
+    {
+      "label": "ridge_esm2",
+      "value": -0.0031288845780628243,
+      "n": 1,
+      "kind": "deterministic control",
+      "source": "final_report.json"
+    },
+    {
+      "label": "GEARS",
+      "value": -0.004914027371087361,
+      "n": 3,
+      "sd": 0.036421330309087674,
+      "lo": -0.046964561338375684,
+      "hi": 0.01668373090778897,
+      "estimator": "mean_over_perturbations_of_within_perturbation_r",
+      "kind": "mean over runs",
+      "source": "D_gears.json"
+    },
+    {
+      "label": "knn_esm2",
+      "value": -0.009262140714717162,
+      "n": 1,
+      "kind": "deterministic control",
+      "source": "final_report.json"
+    }
+  ],
+  "caveats": [
+    "D_gears.json: Tuning effort is not equalised: the external model runs at or near its defaults, while VCPE's hyperparameters were chosen against this data over many runs. That asymmetry favours VCPE and no protocol alignment removes it; the honest fix is an equal tuning budget for both.",
+    "D_gears.json: Capacity is not equalised: the external models are generally far larger than the 5.7M-parameter VCPE head. If VCPE wins it wins as the smaller model; if it loses, the size difference is an explanation rather than an excuse.",
+    "D_gears.json: Each external model keeps its own preprocessing (its own graph, its own highly-variable-gene or DE selection). Disabling that would not be a comparison against the published method.",
+    "D_gears.json: GEARS's perturbation graph is GO-derived, so a target gene can be in the training split and still be unpredictable; the count of held-out genes present in the graph is reported above.",
+    "D_gears.json: GEARS is broken on a current scipy/pandas and required a dense-X workaround scoped to its constructor; see the note in _dense_X. A GEARS comparison is not reproducible today without that or an older scipy, and which was used belongs next to this number.",
+    "D_gears.json: GEARS does not reproduce its own result at a fixed seed, so its number here is a mean over --runs repetitions with the spread reported.",
+    "D_gears.json: Input granularity differs on purpose. GEARS trained on individual cells (tian2021_crispri_cells20.h5ad) while the P3 head trains on the pseudobulk mean of the same cells; the split, the gene panel, the predicted quantity and the metric are identical. GEARS cannot run on pseudobulk at all -- its differential-expression step has no statistics for a group of one -- so the alternative was not a fairer comparison but no comparison.",
+    "D_cpa.json: Tuning effort is not equalised: the external model runs at or near its defaults, while VCPE's hyperparameters were chosen against this data over many runs. That asymmetry favours VCPE and no protocol alignment removes it; the honest fix is an equal tuning budget for both.",
+    "D_cpa.json: Capacity is not equalised: the external models are generally far larger than the 5.7M-parameter VCPE head. If VCPE wins it wins as the smaller model; if it loses, the size difference is an explanation rather than an excuse.",
+    "D_cpa.json: Each external model keeps its own preprocessing (its own graph, its own highly-variable-gene or DE selection). Disabling that would not be a comparison against the published method.",
+    "D_cpa.json: Input granularity differs on purpose: CPA trained on individual cells while the P3 head trains on the pseudobulk mean of the same cells. The split, panel, predicted quantity and metric are identical. CPA models variation within a condition, so a pseudobulk input would not be a fairer comparison, only a meaningless one."
+  ],
+  "estimator": "mean_over_perturbations_of_within_perturbation_r",
+  "reports": [
+    "/home/user/VCPE-rna/results/real_35M/D_head/final_report.json",
+    "/home/user/VCPE-rna/results/real_35M/D_gears.json",
+    "/home/user/VCPE-rna/results/real_35M/D_cpa.json"
+  ],
+  "provenance": {
+    "recorded_at": "2026-09-30T06:57:29+0000",
+    "git": {
+      "revision": "77263873c220b882b21c15775de3ac89da07f586",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": true,
+      "n_modified_files": 1
+    },
+    "command": "assemble_comparison.py --out_json results/real_35M/table_D.json --reports results/real_35M/D_head/final_report.json results/real_35M/D_gears.json results/real_35M/D_cpa.json",
+    "argv": [
+      "tools/assemble_comparison.py",
+      "--out_json",
+      "results/real_35M/table_D.json",
+      "--reports",
+      "results/real_35M/D_head/final_report.json",
+      "results/real_35M/D_gears.json",
+      "results/real_35M/D_cpa.json"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "reports": [
+        "results/real_35M/D_head/final_report.json",
+        "results/real_35M/D_gears.json",
+        "results/real_35M/D_cpa.json"
+      ],
+      "out_json": "results/real_35M/table_D.json",
+      "out_md": null,
+      "metric": "pearson_dev",
+      "allow": []
+    },
+    "warning": "the working tree was dirty when this result was produced, so the recorded revision does not fully describe the code that ran"
+  }
+}

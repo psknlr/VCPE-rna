@@ -1,16 +1,26 @@
-"""VCPE-rna 诊断：预测区分度塌缩定位（只读模型与数据，不改任何状态）。
+"""VCPE-rna diagnostic: locating a collapse in predictive discrimination.
 
-对一个 P2 ckpt，用三类前向对比同一批扰动目标的 pred_fc：
-  A. eval-style   —— 复刻 P2 评估路径：S=8 个该扰动所属数据集的真实控制细胞
-  B. export-style —— 复刻导出路径：S=1 个 K562 真实控制细胞
-  C. train-style   —— 训练集内的扰动（模型见过的），eval-style 前向
+Read-only: loads a checkpoint and data, changes no state, writes no files.
 
-每组输出：std(pred_fc) / max|pred_fc| / 对 true_fc 的 pearson。
-判读：
-  A 有区分度 + B 塌缩  → 输入构造差异（S 数量/控制句来源）是根因
-  A、B 都塌缩          → 模型对未见扰动只输出共性响应，P2 指标被灌水，
-                          需要重审评估协议（补"去共享成分后的判别力"指标）
-  C 有区分度 + A 塌缩  → 模型只记住了训练扰动，未见扰动泛化失败
+For one P2 checkpoint, compares pred_fc for the same perturbations under three
+input constructions:
+  A. eval-style   -- replicates the P2 evaluation path: S=8 real control cells
+                     from the perturbation's own dataset
+  B. export-style -- replicates the cache-export path: S=1 real K562 control cell
+  C. train-style  -- perturbations the model was trained on, via eval-style
+
+Each row reports std(pred_fc), max|pred_fc|, and the Pearson correlation with
+true_fc.
+
+How to read it (decided before running, not after):
+  A discriminates, B collapses  -> the input construction is the cause (number of
+                                   control cells, or which cells they come from)
+  A and B both collapse         -> the model emits only the shared response for
+                                   unseen perturbations, so the conventional P2
+                                   metrics are inflated and the protocol needs a
+                                   shared-component-free discrimination metric
+  C discriminates, A collapses  -> the model memorised training perturbations and
+                                   fails to generalise
 
 Run (GPU box):
   cd $BASE/MAP-KG-main/MAP
@@ -62,8 +72,15 @@ def main():
     p.add_argument("--p2_ckpt", type=str, required=True)
     p.add_argument("--rna_encoder_ckpt", type=str, required=True)
     p.add_argument("--fasta", type=str, required=True)
-    p.add_argument("--n_test", type=int, default=8, help="test perts to probe")
-    p.add_argument("--n_train", type=int, default=4, help="train perts to probe")
+    p.add_argument("--n_test", type=int, default=32,
+                   help="test perturbations to probe. The P2 erratum was "
+                        "originally run with 8 test + 4 train probes; the "
+                        "conclusion was unambiguous (r ~= 1.000 throughout), but "
+                        "12 probes is too few to quantify a borderline case, so "
+                        "the default is now higher.")
+    p.add_argument("--n_train", type=int, default=16,
+                   help="train perturbations to probe (the 'memorised training "
+                        "perturbations only' control)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--string_neighbors", type=str, default="",
                    help="P2.2: string_neighbors.npy (network axis); empty = off")
@@ -84,7 +101,8 @@ def main():
     hvg_rows = make_hvg_list(kd, n_hvg=2000)
     hvg_syms = None
 
-    # P2 split 复现（seed 0）
+    # reproduce the P2 split (seed 0). NOTE: train_p2's split function differs
+    # from train_p1's, and this replicates train_p2's -- see docs/ERRATA.md.
     rng = np.random.default_rng(0)
     by_ds = {}
     for it in kd["pert_index"]:
@@ -97,7 +115,8 @@ def main():
         test_items.extend([lst[i] for i in idx[:n_test]])
         train_items.extend([lst[i] for i in idx[n_test:]])
 
-    # 挑 K562 系（adamson/norman）的 test 扰动 + 若干 train 扰动
+    # probe K562-lineage (adamson/norman) test perturbations, plus some training
+    # perturbations as the memorisation control
     k562_test = [it for it in test_items if it[0] in (0, 1)][: args.n_test]
     k562_train = [it for it in train_items if it[0] in (0, 1)][: args.n_train]
     probes = [("TEST", it) for it in k562_test] + [("TRAIN", it) for it in k562_train]
@@ -119,7 +138,8 @@ def main():
     else:
         print("[P2.2] neighbor table NOT provided - network axis OFF", flush=True)
 
-    # per-dataset ctrl 均值（HVG 空间）——true_fc 与 pred_fc 都相对它
+    # per-dataset control mean in HVG space; both true_fc and pred_fc are
+    # expressed relative to it
     def ctrl_hvg_of(di):
         rows = kd["row_of_gene"][di]
         cm = kd["X_ctrl"][di].mean(axis=0)
@@ -143,7 +163,7 @@ def main():
         tok = torch.tensor([ids], device=device)
         msk = torch.tensor([msk], device=device).bool()
         pr = torch.tensor([row], device=device)
-        return model.compute_pert_vec(pr, tok, msk)  # [1, dim_emb]（含网络轴）
+        return model.compute_pert_vec(pr, tok, msk)  # [1, dim_emb], network axis included
 
     probe_pvs = {}
     for split, (di, cond) in probes:
@@ -170,11 +190,12 @@ def main():
 
         pv_real = probe_pvs[(split, di, cond)]
         pv_zero = torch.zeros_like(pv_real)
-        # swap: 取另一个 probe 的 pert_vec
+        # swap: substitute another probe's perturbation vector
         swap_idx = (list(probe_pvs.keys()).index((split, di, cond)) + 1) % len(probe_pvs)
         pv_swap = all_pvs[swap_idx: swap_idx + 1]
 
-        # 控制句：eval-style = 本数据集 8 个真实控制细胞；export-style = 单个 K562 真细胞
+        # control sentence: eval-style = 8 real control cells from this dataset;
+        # export-style = a single real K562 cell
         rng_c = np.random.default_rng(args.seed + 7)
         sent_ids, sent_exs = [], []
         for _ in range(8):
@@ -197,14 +218,16 @@ def main():
         msk_t = torch.tensor([msk], device=device).bool()
 
         pr_real = None
+        captured = {}
         for style, pv in [("eval(S=8) real", None), ("export(S=1) real", pv_real),
                           ("export zeroPert", pv_zero), ("export swapPert", pv_swap)]:
             with torch.no_grad():
-                if pv is None:  # eval-style：常规前向（模型内部算 pert token）
+                if pv is None:  # eval-style: normal forward; the model builds
+                                # the perturbation token internally
                     _, pred_hvgs = model(cg, ce,
                                          torch.tensor([pert_row], device=device),
                                          tok, msk_t)
-                else:           # ablation：pert_vec_override
+                else:           # ablation: replace the whole perturbation token
                     _, pred_hvgs = model(cg, ce,
                                          torch.tensor([pert_row], device=device),
                                          tok, msk_t, pert_vec_override=pv)
@@ -214,15 +237,31 @@ def main():
                   if true_fc.std() > 1e-6 and pred_fc.std() > 1e-6 else 0.0)
             if style.startswith("export(S=1)"):
                 pr_real = pred_fc.copy()
+            captured[style] = pred_fc.copy()
             print(f"{split:6} {di:3} {cond:18} {style:16} "
                   f"{pred_fc.std():8.4f} {np.abs(pred_fc).max():8.4f} {pr:8.3f}",
                   flush=True)
-        # 关键判据：real 输出与 zeroPert 输出的相关（≈1 → pert token 被架空）
-        pz = (float(np.corrcoef(pr_real, pred_fc)[0, 1])
-              if pr_real is not None and pr_real.std() > 1e-6 and pred_fc.std() > 1e-6
-              else float("nan"))
+
+        # Key criterion: r(real output, ablated output) ~= 1 means the
+        # perturbation token is being bypassed.
+        #
+        # This block previously printed one number labelled "(real vs zeroPert
+        # r)" while correlating against `pred_fc`, which at loop exit held the
+        # LAST iteration's output -- i.e. swapPert, not zeroPert. The direction
+        # of the P2 conclusion is unaffected (both ablations read ~1.000 there),
+        # but the label did not match the quantity. Both are now computed and
+        # printed separately.
+        def _r(a, b):
+            if a is None or b is None or a.std() <= 1e-6 or b.std() <= 1e-6:
+                return float("nan")
+            return float(np.corrcoef(a, b)[0, 1])
+
+        pz = _r(pr_real, captured.get("export zeroPert"))
+        ps = _r(pr_real, captured.get("export swapPert"))
         print(f"{'':6} {'':3} {'(real vs zeroPert r)':18} {'':16} "
               f"{'':8} {'':8} {'':8} {pz:12.3f}", flush=True)
+        print(f"{'':6} {'':3} {'(real vs swapPert r)':18} {'':16} "
+              f"{'':8} {'':8} {'':8} {ps:12.3f}", flush=True)
         print(f"{'':6} {'':3} {'(true_fc)':18} {'':16} "
               f"{true_fc.std():8.4f} {np.abs(true_fc).max():8.4f} {'1.000':>8}",
               flush=True)

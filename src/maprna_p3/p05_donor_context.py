@@ -1,15 +1,21 @@
 #!/usr/bin/env python
-"""P0.5 原代肝语境修复：donor ctrl 特征替换对比实验（CPU 可跑）。
+"""P0.5 primary-liver context fix: donor ctrl feature replacement comparison
+experiment (runs on CPU).
 
-虚拟肝脏 G0 裁决发现 hepg2 癌系 donor 语境导致器官级方向一致率仅 44%（<60%）。
-本脚本在完全相同的模型/panel/协议下，只替换 donor ctrl 特征（cf 向量 + pe 标量），
-对比三种 donor 在 GSE289964 器官实测（in vivo 全肝）上的表现：
+The virtual-liver G0 ruling found that the hepg2 cancer-line donor context
+brings the organ-level direction-consistency rate down to only 44% (<60%).
+Under an entirely identical model / panel / protocol, this script replaces the
+donor ctrl features only (the cf vector + the pe scalar) and compares how three
+donors perform against the GSE289964 organ measurement (in vivo whole liver):
 
-  hepg2    —— 基线（当前 G0 口径，hepg2 数据集内部 z-score）
-  invivo   —— GSE289964 PBS 对照组均值（log1pTPM，同实验基线）
-  gtex     —— GTEx v10 肝组织 median TPM（log1p，公开原代参考）
+  hepg2    -- baseline (the current G0 convention, z-scored within the hepg2
+              dataset)
+  invivo   -- the mean of the GSE289964 PBS control group (log1pTPM, the
+              baseline of the same experiment)
+  gtex     -- GTEx v10 liver tissue median TPM (log1p, a public primary-tissue
+              reference)
 
-用法（CPU）：
+Usage (CPU):
   python p05_donor_context.py \
     --ckpt ../../p3_v21e/ckpt_p3_best_dev.pt \
     --hepg2_h5ad ../../data/scperturb_proc/NadigOConner2024_hepg2_proc.h5ad \
@@ -39,7 +45,7 @@ for _sib in ("maprna_p1", "maprna_p2", "maprna_p3"):
         sys.path.insert(0, _p)
 
 from ds_knockdown import load_kd_datasets, build_symbol2row, resolve_pert_row  # noqa: E402
-from model_dev import DeviationModel, load_esm_matrix  # noqa: E402
+from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
 
 
 def build_model(args, device):
@@ -60,13 +66,13 @@ def build_model(args, device):
     model = DeviationModel(esm, hvg_rows, n_ds=n_ds, rna_encoder=rna_enc).to(device).eval()
     if args.string_neighbors and os.path.exists(args.string_neighbors):
         model.set_neighbor_table(np.load(args.string_neighbors), device)
-    model.load_state_dict(ck["model_state_dict"])
+    load_dev_state(model, ck)
     syms = [sym_by_row.get(int(r)) for r in hvg_rows]
     return ck, n_ds, hvg_rows, common_fc, sym2row, sym_by_row, model, syms
 
 
 def donor_hepg2(args, sym2row, sym_by_row, hvg_rows, targets):
-    """基线：hepg2 数据集内部 ctrl（log1p CP10K）。"""
+    """Baseline: ctrl from inside the hepg2 dataset (log1p CP10K)."""
     kd = load_kd_datasets([args.hepg2_h5ad], sym2row, min_cells=args.min_cells)
     r2c = {int(r): c for c, r in enumerate(kd["row_of_gene"][0])}
     cm = np.asarray(kd["X_ctrl"][0].mean(axis=0), dtype=np.float32)
@@ -79,23 +85,28 @@ def donor_hepg2(args, sym2row, sym_by_row, hvg_rows, targets):
 
 
 def donor_invivo(args, hvg_rows):
-    """GSE289964 PBS 对照均值（log1pTPM）。注意：donor ctrl 不含任何扰动响应信息，
-    但与本考卷同实验——结果标注该 caveat，正式版可用留一修饰隔离验证。"""
+    """Mean of the GSE289964 PBS controls (log1pTPM). Caveat: the donor ctrl
+    contains no perturbation-response information at all, but it comes from the
+    same experiment as this exam -- the results are annotated with that caveat,
+    and the official version can use leave-one-modification-out isolation to
+    validate.
+    """
     import anndata as ad
     a = ad.read_h5ad(args.invivo_h5ad)
     X = a.X.toarray() if hasattr(a.X, "toarray") else np.asarray(a.X)
     ctrl = np.where(a.obs["control"].values == 1)[0]
     cm = X[ctrl].mean(axis=0)
     sym2val = {str(g): float(v) for g, v in zip(map(str, a.var_names), cm)}
-    print(f"  [donor invivo] ctrl 样本 {len(ctrl)} | 基因 {len(sym2val)}", flush=True)
+    print(f"  [donor invivo] ctrl samples {len(ctrl)} | genes {len(sym2val)}",
+          flush=True)
     return sym2val
 
 
 def donor_gtex(args, hvg_rows):
-    """GTEx v10 肝 median TPM（log1p）。gct: Name / Description(symbol) / 54 tissue cols."""
+    """GTEx v10 liver median TPM (log1p). gct: Name / Description(symbol) / 54 tissue cols."""
     tissue_col, rows = None, {}
     with gzip.open(args.gtex_gct, "rt") as f:
-        f.readline(); f.readline()  # version + shape 行
+        f.readline(); f.readline()  # version + shape lines
         header = f.readline().rstrip("\n").split("\t")
         tissue_col = header.index("Liver")
         for line in f:
@@ -106,12 +117,14 @@ def donor_gtex(args, hvg_rows):
             except ValueError:
                 pass
     sym2val = {g: float(np.log1p(v)) for g, v in rows.items()}
-    print(f"  [donor gtex] 肝 median TPM 基因 {len(sym2val)}", flush=True)
+    print(f"  [donor gtex] liver median TPM genes {len(sym2val)}", flush=True)
     return sym2val
 
 
 def eval_g0(pred_by_sym, tag):
-    """G0 双口径：panel 内 DEG 方向一致率 + spearman（与 P0 报告同协议）。"""
+    """The two G0 measures: in-panel DEG direction-consistency rate + spearman
+    (same protocol as the P0 report).
+    """
     from scipy.stats import spearmanr
     import anndata as ad
     a = ad.read_h5ad(os.path.join(HERE, "..", "..", "data", "aso_tx_validation",
@@ -139,9 +152,10 @@ def eval_g0(pred_by_sym, tag):
             ag.append(agree); rg.append(rho)
             cov.append(len(in_panel) / max(1, len(deg)))
             print(f"    {mod+'@'+tp:12s} nDEG {len(deg):>4d} | ∩ {len(in_panel):>3d} | "
-                  f"一致 {agree:.0%} | rho {rho:+.3f}", flush=True)
-    print(f"  ==> [{tag}] 一致率均值 {np.mean(ag):.0%} | spearman {np.mean(rg):+.3f} | "
-          f"覆盖 {np.mean(cov):.1%}", flush=True)
+                  f"consistency {agree:.0%} | rho {rho:+.3f}", flush=True)
+    print(f"  ==> [{tag}] mean consistency rate {np.mean(ag):.0%} | "
+          f"spearman {np.mean(rg):+.3f} | "
+          f"coverage {np.mean(cov):.1%}", flush=True)
     return float(np.mean(ag)), float(np.mean(rg))
 
 
@@ -170,9 +184,9 @@ def main():
     for tgt in args.targets:
         row = resolve_pert_row(sym2row, tgt)
         if row is None or int(row) < 0:
-            print(f"[{tgt}] 无法解析，跳过", flush=True)
+            print(f"[{tgt}] cannot be resolved, skipping", flush=True)
             continue
-        print(f"\n===== 靶点 {tgt} =====", flush=True)
+        print(f"\n===== target {tgt} =====", flush=True)
         for tag, builder in [("hepg2", lambda: donor_hepg2(args, sym2row, sym_by_row, hvg_rows, [tgt])),
                              ("invivo", lambda: donor_invivo(args, hvg_rows)),
                              ("gtex", lambda: donor_gtex(args, hvg_rows))]:

@@ -1,15 +1,33 @@
 #!/usr/bin/env python
-"""效力模型推理服务：ASO 序列 + 靶基因 (+细胞系) -> 敲低效率预测。
+"""ASO efficacy inference: sequence + target gene (+ cell line) -> knockdown depth.
 
-模型：efficacy_v1（ASO Atlas 190,927 gapmer 训练，val spearman 0.50，n=21,989）。
-输入：DNA 序列（10-30nt，非 ACGT 字符剔除）；化学默认全 DNA + PS 骨架（gapmer 标准）；
-     剂量未知 -> dose_mu + missing flag（训练同款缺失处理）。
-细胞系：cell2id 精确匹配（大小写不敏感）；未收录 -> 82 个已训 cell_emb 的均值向量回退。
-输出：inhibition_pct（0-95 截断）与 kd（0.20-0.95 截断）。
+Input : DNA sequence, 10-30 nt, non-ACGT characters stripped. Chemistry defaults
+        to uniform PS backbone with UNMODIFIED (DNA) wings -- which is a
+        PS-DNA oligonucleotide, not a gapmer. Pass `wing_mod` explicitly
+        ('moe' / 'lna' -> cEt / 'f') to place the molecule inside the training
+        distribution (~53% 5-10-5 MOE, ~30% 3-10-3 cEt).
+Dose  : not exposed in the public API; every call is made at the training-mean
+        dose with the missing flag set, mirroring how missing dose was handled
+        during training.
+Cells : exact cell2id match (case-insensitive); unknown -> mean of the trained
+        cell embeddings. That mean vector never occurred during training and its
+        behaviour has not been validated.
+Output: inhibition_pct (clipped to 0-95) and kd = inhibition_pct / 100, which
+        are guaranteed to agree with one another.
 
-用法：
+Accuracy: this module quotes whatever held-out metrics the loaded checkpoint
+carries and refuses to invent one. Checkpoints written before v4 were selected
+on the same slice they reported, and their sequence encoder has no positional
+embedding; `position_aware` in the output says which generation is loaded.
+
+Scope: the model takes sequence + wing chemistry + cell line. Delivery
+(GalNAc / LNP / route / tissue exposure) is NOT modelled, and outputs are
+intrinsic in-vitro potency, not tissue-level efficacy.
+
+Usage:
   from predict_service import predict_inhibition
-  predict_inhibition("TGCATCGTACGTAGCTGATC", "APOC3", cell_line="hepg2")
+  predict_inhibition("TGCATCGTACGTAGCTGATC", "APOC3", cell_line="hepg2",
+                     wing_mod="moe")
 """
 import os
 import sys
@@ -22,7 +40,6 @@ DEFAULT_ESM = os.path.abspath(os.path.join(
     HERE, "..", "..", "data", "drive_weights",
     "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt"))
 
-_BASES = {"A": 0, "C": 1, "G": 2, "T": 3, "N": 4}
 _pack_cache = {}
 
 
@@ -32,28 +49,36 @@ def _load(ckpt_fp=None, esm_fp=None):
     key = (ckpt_fp, esm_fp)
     if key in _pack_cache:
         return _pack_cache[key]
-    from model_efficacy import EfficacyHead
+    from model_efficacy import load_efficacy_head, vocabs
     ck = torch.load(ckpt_fp, map_location="cpu", weights_only=False)
     tab = torch.load(esm_fp, map_location="cpu", weights_only=False)
     symbols = list(tab.keys())
     esm = torch.stack([v.float() for v in tab.values()])
     gene2row = {s: i for i, s in enumerate(symbols)}
     n_cell = ck["model_state_dict"]["cell_emb.weight"].shape[0]
-    m = EfficacyHead(esm, n_cell_lines=n_cell)
-    m.load_state_dict(ck["model_state_dict"])
+    # load_efficacy_head reads `arch_config` from the checkpoint, so a pre-v4
+    # checkpoint is rebuilt with its own (legacy, position-free) architecture
+    # and its own vocabularies instead of being silently reinterpreted under
+    # the current ones.
+    m, arch = load_efficacy_head(ck, esm, n_cell)
     m.eval()
-    n_trained = n_cell - 1                      # 末行未训练（未知回退保留位）
+    n_trained = n_cell - 1                      # last row untrained (reserved unknown fallback)
     cell_mean = m.cell_emb.weight[:n_trained].mean(0).detach()
+    b_voc, s_voc, k_voc = vocabs(arch.get("legacy_vocab", True))
     pack = dict(model=m, gene2row=gene2row, cell2id=ck["cell2id"],
                 dose_mu=float(ck["dose_mu"]), cell_mean=cell_mean,
+                arch=arch, bases=b_voc, sugars=s_voc, backbones=k_voc,
                 metrics=ck.get("metrics", {}))
     _pack_cache[key] = pack
     return pack
 
 
-SUGAR_IDX = {"DNA": 0, "MOE": 1, "cEt": 2, "F": 3, "other": 4}
-BB_IDX = {"PO": 0, "PS": 1}
-# 训练词表无 LNA 类：LNA 与 cEt 同属约束型 BNA 家族，映射到 cEt（模型已学的最近类）
+# Vocabularies are taken from the loaded checkpoint via model_efficacy.vocabs();
+# module-level index tables were removed because they silently assumed the
+# pre-v4 layout, in which index 0 meant "DNA"/"PO" rather than PAD.
+# The training vocabulary has no LNA class: LNA and cEt both belong to the
+# constrained BNA family, so LNA is mapped to cEt (the nearest class the
+# model has already learned).
 WING_MAP = {"dna": "DNA", "unmodified": "DNA", "moe": "MOE",
             "lna": "cEt", "cet": "cEt", "f": "F", "mix": "MOE"}
 
@@ -61,30 +86,40 @@ WING_MAP = {"dna": "DNA", "unmodified": "DNA", "moe": "MOE",
 def predict_inhibition(seq, target_gene, cell_line=None,
                        wing_mod=None, wing_len=3,
                        ckpt_fp=None, esm_fp=None):
-    """返回 dict；error 键存在表示预测失败（调用方回退手输效率）。"""
+    """Return a dict; presence of an `error` key means the prediction failed
+    (the caller then falls back to a hand-entered efficacy).
+    """
     pack = _load(ckpt_fp, esm_fp)
     m = pack["model"]
     seq = "".join(ch for ch in str(seq).upper() if ch in "ACGT")
     if len(seq) < 10 or len(seq) > 30:
-        return dict(error=f"序列长度需 10-30nt（当前 {len(seq)}）")
+        return dict(error=f"sequence length must be 10-30 nt (got {len(seq)})")
     row = pack["gene2row"].get(target_gene)
     if row is None:
-        return dict(error=f"靶基因 {target_gene} 不在 ESM 表覆盖范围")
+        return dict(error=f"target gene {target_gene} is not in the ESM2 table")
 
     L = len(seq)
-    base = torch.tensor([[_BASES[ch] for ch in seq]], dtype=torch.long)
-    # 化学轴：翼修饰 -> sugar 词表（默认全 DNA + PS）
+    # Vocabularies come from the loaded checkpoint's architecture, not from
+    # module-level constants: the v4 vocabularies reserve index 0 for PAD, so a
+    # hard-coded table would map every symbol one position off for one of the
+    # two checkpoint generations.
+    B_VOC, S_VOC, K_VOC = pack["bases"], pack["sugars"], pack["backbones"]
+    base = torch.tensor([[B_VOC.get(ch, B_VOC["N"]) for ch in seq]], dtype=torch.long)
     wing_eff = WING_MAP.get(str(wing_mod or "dna").lower(), "DNA")
     wl = max(0, min(int(wing_len), (L - 1) // 2))
-    sug_idx = SUGAR_IDX[wing_eff]
-    sug_row = [sug_idx if (i < wl or i >= L - wl) else SUGAR_IDX["DNA"]
-               for i in range(L)]
+    sug_idx = S_VOC[wing_eff]
+    sug_row = [sug_idx if (i < wl or i >= L - wl) else S_VOC["DNA"] for i in range(L)]
     sug = torch.tensor([sug_row], dtype=torch.long)
-    bb = torch.ones(1, L, dtype=torch.long)         # 全 PS（gapmer 标准）
+    # Backbone defaults to uniform PS. Note that with wing_mod="dna" (the
+    # default) the resulting molecule is a fully-DNA phosphorothioate, which is
+    # NOT a gapmer -- a gapmer is defined by modified wings. The ASO Atlas
+    # training distribution is ~53% 5-10-5 MOE and ~30% 3-10-3 cEt, so the
+    # default configuration sits outside it; pass wing_mod explicitly.
+    bb = torch.full((1, L), K_VOC["PS"], dtype=torch.long)
     pad = torch.zeros(1, L, dtype=torch.bool)
     gr = torch.tensor([row], dtype=torch.long)
 
-    used, cid = "均值嵌入回退（未收录细胞系）", None
+    used, cid = "mean-embedding fallback (cell line not in vocabulary)", None
     if cell_line:
         c2i = pack["cell2id"]
         hit_key = cell_line if cell_line in c2i else next(
@@ -97,27 +132,53 @@ def predict_inhibition(seq, target_gene, cell_line=None,
     dm = torch.ones(1, dtype=torch.float32)
 
     with torch.no_grad():
-        x = m.in_proj(torch.cat([m.base_emb(base), m.sugar_emb(sug),
-                                 m.bb_emb(bb)], dim=-1))
-        x = m.encoder(x, src_key_padding_mask=pad)
-        valid = (~pad).float().unsqueeze(-1)
-        pooled = torch.cat([(x * valid).sum(1) / valid.sum(1).clamp(min=1.0),
-                            x.masked_fill(pad.unsqueeze(-1), -1e4).max(1).values],
-                           dim=-1)
-        g = m.esm_proj(m.esm_table[gr])
-        f = torch.cat([pooled, g, cell_vec, dl.unsqueeze(-1),
-                       dm.unsqueeze(-1)], dim=-1)
-        pred = m.head(f).squeeze(-1).item()
+        if cid is not None:
+            pred = m(base, sug, bb, pad, gr,
+                     torch.tensor([cid], dtype=torch.long), dl, dm).item()
+        else:
+            # Unknown cell line: reuse the module's own forward for everything
+            # except the cell embedding, which is replaced by the mean of the
+            # trained rows. Reimplementing the forward pass here (as pre-v4 did)
+            # silently skipped any layer added to the model -- the positional
+            # embedding among them.
+            x = m.in_proj(torch.cat([m.base_emb(base), m.sugar_emb(sug),
+                                     m.bb_emb(bb)], dim=-1))
+            if getattr(m, "pos_emb", None) is not None:
+                x = x + m.pos_emb(torch.arange(x.shape[1]).unsqueeze(0))
+            x = m.encoder(x, src_key_padding_mask=pad)
+            valid = (~pad).float().unsqueeze(-1)
+            pooled = torch.cat([(x * valid).sum(1) / valid.sum(1).clamp(min=1.0),
+                                x.masked_fill(pad.unsqueeze(-1), -1e4).max(1).values],
+                               dim=-1)
+            g = m.esm_proj(m.esm_table[gr])
+            f = torch.cat([pooled, g, cell_vec, dl.unsqueeze(-1),
+                           dm.unsqueeze(-1)], dim=-1)
+            pred = m.head(f).squeeze(-1).item()
 
+    # inhibition_pct and kd must agree. Pre-v4 clamped kd to a 0.20 floor while
+    # leaving inhibition_pct free, so the same call could return
+    # inhibition_pct=11.0 together with kd=0.200, and every prediction below 20%
+    # collapsed onto one value, destroying the ranking at the low-potency end --
+    # exactly the end a triage tool needs to resolve.
     inh = float(min(max(pred, 0.0), 95.0))
-    kd = float(min(max(pred / 100.0, 0.2), 0.95))
+    kd = inh / 100.0
+    arch = pack.get("arch", {})
+    mm = pack.get("metrics", {})
     return dict(inhibition_pct=round(inh, 1), kd=round(kd, 3),
                 cell_line_used=used, target=target_gene, raw_pred=round(pred, 2),
                 chemistry=dict(wing=wing_eff, wing_len=wl,
+                               backbone="PS (uniform)",
+                               is_gapmer=bool(wl > 0 and wing_eff != "DNA"),
                                mapped=("LNA->cEt" if str(wing_mod or "").lower() == "lna"
                                        else None)),
-                model="efficacy_v1 (ASO Atlas 190k gapmer, "
-                      f"spearman {pack['metrics'].get('spearman', 0):.2f})")
+                position_aware=bool(arch.get("use_pos_emb", False)),
+                model=("efficacy ASO head (ASO Atlas gapmers); "
+                       + ("position-aware" if arch.get("use_pos_emb")
+                          else "PRE-v4 checkpoint: no positional embedding, so the "
+                               "sequence branch is a bag of (base, sugar, backbone) "
+                               "triples and cannot distinguish where a modification sits")),
+                heldout_metrics=mm if mm else
+                "checkpoint carries no held-out metrics; do not quote an accuracy for it")
 
 
 if __name__ == "__main__":
@@ -127,10 +188,24 @@ if __name__ == "__main__":
         ensure_ascii=False, indent=2))
 
 
-# ===== hybrid 路由：统一效力入口（2026-09-07 同裁判对比后拍板） =====
-# 已知靶点（XGBoost gene_vocab 93 个）：XGBoost v5（patent-split PCC 0.58，胜 transformer 0.51）
-# 新靶点：efficacy_v1 transformer（ESM2 靶基因轴外推，0.29 vs 0.27 略胜且泛化）
-_XGB_PROJ = os.environ.get("RNA_ROBOT_HOME", "")  # optional: rna_robot platform root
+# ===== hybrid routing (OPTIONAL, NOT PART OF THIS REPOSITORY) =====
+#
+# `predict_kd_hybrid` can route known target genes to an external gradient-boosted
+# model ("xgboost_v5") that lives in a separate, private platform repository
+# reached through $RNA_ROBOT_HOME. That model is NOT distributed here: this
+# repository contains no weights, no training script, no feature extractor and no
+# evaluation for it, and it is absent from results/MANIFEST_sha256.txt and from
+# the release assets.
+#
+# Consequences, stated plainly because they were previously only implied:
+#   * With RNA_ROBOT_HOME unset -- the case for every external user -- the branch
+#     below is unreachable and `predict_kd_hybrid` is a thin wrapper around
+#     `predict_inhibition`. Prefer calling `predict_inhibition` directly.
+#   * The comparison that motivated this routing (PCC 0.58 vs 0.51 on a
+#     "patent split") is not reproducible from this repository, and that split
+#     was grouped by ASO Atlas `custom_id`, i.e. by source patent TABLE rather
+#     than by patent. Those numbers should not be cited as a head-to-head result.
+_XGB_PROJ = os.environ.get("RNA_ROBOT_HOME", "")  # private platform root; unset by default
 _XGB_STATE = {"ok": None}
 
 
@@ -145,7 +220,9 @@ def _xgb_available():
 
 
 def _chem_stub(wing_eff, L, wl):
-    """构造 train_aso_xgb.extract_chemistry_features 兼容的 chemistry stub（翼修饰语义）。"""
+    """Build a chemistry stub compatible with
+    train_aso_xgb.extract_chemistry_features (wing-modification semantics).
+    """
     class _Mod:
         def __init__(self, m, t, pos):
             self.__dict__ = {"modification": m, "type": t, "positions": pos}
@@ -161,8 +238,25 @@ def _chem_stub(wing_eff, L, wl):
 
 
 def predict_kd_hybrid(seq, target_gene, cell_line=None, wing_mod=None, wing_len=3):
-    """统一效力入口：按靶基因是否在 XGBoost 词表内路由，返回字段与 predict_inhibition 一致
-    （额外带 model_source: 'xgboost_v5' | 'transformer'）。"""
+    """Unified efficacy entry point: routes on whether the target gene is in the
+    external XGBoost vocabulary. Returns the same fields as predict_inhibition,
+    plus `model_source` ('xgboost_v5' | 'transformer').
+
+    Field parity is enforced below by building the reply from the transformer's
+    and overriding only what the external model actually supplies. Before that,
+    the 'xgboost_v5' branch silently broke parity four ways: it omitted
+    position_aware / model / heldout_metrics, omitted the chemistry keys
+    backbone and is_gapmer, reported raw_pred as a 0-1 fraction where
+    predict_inhibition reports a percent, and -- worst -- clipped kd to a 0.20
+    floor while leaving inhibition_pct free. That last one contradicted this
+    module's guarantee that kd == inhibition_pct / 100 and reinstated exactly
+    the pre-v4 behaviour ERRATA E12g records as removed, in the branch the
+    platform was told to prefer.
+
+    Reachable only when $RNA_ROBOT_HOME points at the private platform
+    repository; for every external user this returns predict_inhibition's reply
+    unchanged.
+    """
     base = predict_inhibition(seq, target_gene, cell_line=cell_line,
                               wing_mod=wing_mod, wing_len=wing_len)
     base["model_source"] = "transformer"
@@ -183,15 +277,30 @@ def predict_kd_hybrid(seq, target_gene, cell_line=None, wing_mod=None, wing_len=
         kd = _tx.predict_aso_kd(seq_clean, cell_line=cell_line or "HeLa",
                             target_gene=str(target_gene),
                             chemistry_obj=_chem_stub(wing_eff, L, wl))
+        # Start from the transformer's reply so every field exists, then override
+        # only the prediction itself. kd is derived from inhibition_pct, never
+        # clipped independently -- the two must agree, and no floor is applied.
         inh = float(min(max(kd * 100.0, 0.0), 95.0))
-        kd_c = float(min(max(kd, 0.2), 0.95))
-        return dict(inhibition_pct=round(inh, 1), kd=round(kd_c, 3),
-                    cell_line_used=cell_line or "未指定",
-                    target=target_gene, raw_pred=round(kd, 3),
-                    chemistry=dict(wing=wing_eff, wing_len=wl,
-                                   mapped=("LNA->cEt" if str(wing_mod or "").lower() == "lna"
-                                           else None)),
-                    model_source="xgboost_v5")
+        out = dict(base)
+        out.update(inhibition_pct=round(inh, 1), kd=round(inh / 100.0, 3),
+                   raw_pred=round(kd * 100.0, 2),   # a percent, as in the other branch
+                   cell_line_used=cell_line or "unspecified",
+                   target=target_gene,
+                   model="external XGBoost via $RNA_ROBOT_HOME; not distributed "
+                         "in this repository and carries no held-out metrics here",
+                   heldout_metrics="unavailable: this model is not in this repository",
+                   model_source="xgboost_v5")
+        out["chemistry"] = dict(wing=wing_eff, wing_len=wl,
+                                backbone="PS (uniform)",
+                                is_gapmer=bool(wl > 0 and wing_eff != "DNA"),
+                                mapped=("LNA->cEt"
+                                        if str(wing_mod or "").lower() == "lna"
+                                        else None))
+        return out
     except Exception as e:  # noqa
-        print(f"[hybrid] xgb 分支失败回退 transformer: {str(e)[:90]}", flush=True)
+        # A silent fallback would make a failure of the "preferred" model
+        # invisible to the caller, so say so and mark the source.
+        print(f"[hybrid] xgboost branch failed, falling back to the transformer: "
+              f"{str(e)[:90]}", flush=True)
+        base["xgb_fallback_reason"] = str(e)[:200]
         return base

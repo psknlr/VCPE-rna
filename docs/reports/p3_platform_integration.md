@@ -1,5 +1,7 @@
 # VCPE-rna → Platform Integration Analysis (P3 pre-work; analysis only, no code changes)
 
+> **⚠️ Caches built before v4 are wrong.** `--context_name` reached only the metadata string while the model always received dataset index 0, so a cache labelled `hepg2` or `jurkat` was generated with the adamson/K562 context embedding. Regenerate any existing cache. See [../ERRATA.md](../ERRATA.md), E8.
+
 - Date: 2026-09-01
 - Scope: the response-prediction path of the ASO/siRNA views (MODZ / AIDO.RNA-Pert) → the VCPE-rna
   engine

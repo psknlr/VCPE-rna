@@ -2,11 +2,13 @@
   "holdout": "hepg2",
   "nearest": "jurkat",
   "nearest_sim": 0.9638611695919506,
+  "nearest_sim_metric": "pearson_r_between_dataset_embeddings -- computed with np.corrcoef. Reported as 'emb cos' before v4, which was a mislabel: cosine does not centre, Pearson does. The value is unchanged.",
   "zero_shot_pearson_dev": 0.08118943574449851,
   "fallback_pearson_dev": 0.04727654566199707,
   "delta": 0.03391289008250144,
   "n_eval": 2355,
   "n_hvg": 2000,
   "gate": "FAIL",
-  "gate_rule": "zero-shot - fallback >= +0.02 且 zero-shot > 0.15；FAIL = 永久关闭（Route A 已消除数据条件借口）"
+  "gate_rule": "zero-shot minus fallback >= +0.02 AND zero-shot > 0.15. FAIL closes this track permanently: under Route A the data-availability explanation no longer applies, so a failure here is a failure of the approach rather than of the inputs.",
+  "gate_rule_note": "Pre-registered before the run; recorded as FAIL and not revised afterwards. Translated from the original Chinese in v4; the criterion and all values are unchanged."
 }

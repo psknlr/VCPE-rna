@@ -1,0 +1,231 @@
+{
+  "ranked_on": "inner-validation ridge, mean over seeds [0, 1, 2]",
+  "candidate": "concat k=32 norm",
+  "variants": [
+    {
+      "name": "concat k=32 norm",
+      "mode": "concat",
+      "top_k": 32,
+      "alpha": 0.0,
+      "norm": true,
+      "dim": 1280,
+      "ridge_inner_val": 0.36925702287708134,
+      "ridge_per_seed": [
+        0.34361576860898413,
+        0.4032673126738211,
+        0.36088798734843885
+      ],
+      "knn_inner_val": 0.2888951099374482,
+      "knn_per_seed": [
+        0.24638242602227745,
+        0.3021815360625908,
+        0.3181213677274764
+      ]
+    },
+    {
+      "name": "concat k=32 raw",
+      "mode": "concat",
+      "top_k": 32,
+      "alpha": 0.0,
+      "norm": false,
+      "dim": 1280,
+      "ridge_inner_val": 0.36848066373894034,
+      "ridge_per_seed": [
+        0.34307538934549653,
+        0.40262781614640575,
+        0.35973878572491863
+      ],
+      "knn_inner_val": 0.28530442969700626,
+      "knn_per_seed": [
+        0.24290975676577722,
+        0.30205921797289526,
+        0.31094431435234626
+      ]
+    },
+    {
+      "name": "concat k=16 norm",
+      "mode": "concat",
+      "top_k": 16,
+      "alpha": 0.0,
+      "norm": true,
+      "dim": 1280,
+      "ridge_inner_val": 0.3675899991024738,
+      "ridge_per_seed": [
+        0.34642592627519486,
+        0.40421667362310654,
+        0.35212739740912014
+      ],
+      "knn_inner_val": 0.2967800079223302,
+      "knn_per_seed": [
+        0.2582373797486356,
+        0.30304682166082303,
+        0.3290558223575321
+      ]
+    },
+    {
+      "name": "concat k=8 norm",
+      "mode": "concat",
+      "top_k": 8,
+      "alpha": 0.0,
+      "norm": true,
+      "dim": 1280,
+      "ridge_inner_val": 0.3635588478589251,
+      "ridge_per_seed": [
+        0.3488969488588101,
+        0.3951979014827052,
+        0.34658169323526006
+      ],
+      "knn_inner_val": 0.2878512294730348,
+      "knn_per_seed": [
+        0.2611765397229341,
+        0.30846922692320766,
+        0.29390792177296265
+      ]
+    },
+    {
+      "name": "blend a=0.4 k=32",
+      "mode": "blend",
+      "top_k": 32,
+      "alpha": 0.4,
+      "norm": true,
+      "dim": 640,
+      "ridge_inner_val": 0.34811730013972636,
+      "ridge_per_seed": [
+        0.3317678663768469,
+        0.38101805275232,
+        0.3315659812900121
+      ],
+      "knn_inner_val": 0.2807322411974769,
+      "knn_per_seed": [
+        0.25742207563607156,
+        0.30891262013131193,
+        0.2758620278250472
+      ]
+    },
+    {
+      "name": "concat k=4 norm",
+      "mode": "concat",
+      "top_k": 4,
+      "alpha": 0.0,
+      "norm": true,
+      "dim": 1280,
+      "ridge_inner_val": 0.34485423365280643,
+      "ridge_per_seed": [
+        0.3290886090178276,
+        0.3767799589855137,
+        0.328694132955078
+      ],
+      "knn_inner_val": 0.26794831783393075,
+      "knn_per_seed": [
+        0.24431573362921183,
+        0.28884718272146753,
+        0.2706820371511129
+      ]
+    },
+    {
+      "name": "blend a=0.2 k=32",
+      "mode": "blend",
+      "top_k": 32,
+      "alpha": 0.2,
+      "norm": true,
+      "dim": 640,
+      "ridge_inner_val": 0.3095587662211018,
+      "ridge_per_seed": [
+        0.3010646565966282,
+        0.3369494004739726,
+        0.2906622415927046
+      ],
+      "knn_inner_val": 0.2436916613414002,
+      "knn_per_seed": [
+        0.24509383128329212,
+        0.26299163279659665,
+        0.22298951994431176
+      ]
+    },
+    {
+      "name": "plain (no graph)",
+      "mode": "plain",
+      "top_k": 0,
+      "alpha": 0.0,
+      "norm": false,
+      "dim": 640,
+      "ridge_inner_val": 0.27527250182948204,
+      "ridge_per_seed": [
+        0.2729852845775658,
+        0.2975108370047701,
+        0.25532138390611026
+      ],
+      "knn_inner_val": 0.22293795640803785,
+      "knn_per_seed": [
+        0.21610440478917034,
+        0.23458832545922395,
+        0.2181211389757193
+      ]
+    }
+  ],
+  "plain_reference": 0.27527250182948204,
+  "esm_table": "/home/user/data_real/esm2_150M_human.pt",
+  "neighbors": "/home/user/data_real/string_neighbors_150M.npy",
+  "discipline": "No held-out score is computed anywhere in this script; dev_te is never read. Selecting a design on the slice it is then reported on is ERRATA E3, the defect behind most of the withdrawn numbers.",
+  "caveat": "Ridge is the readout because it is closed-form and currently tied with the head on these features. A design that suits ridge need not suit the head, so the winner is a candidate to verify, not a result.",
+  "provenance": {
+    "recorded_at": "2026-09-30T23:52:48+0000",
+    "git": {
+      "revision": "6823c08aa6b7f2a7b504f30c94daa58f3c8863b3",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": true,
+      "n_modified_files": 1
+    },
+    "command": "sweep_graph_features.py --esm_table /home/user/data_real/esm2_150M_human.pt --neighbors /home/user/data_real/string_neighbors_150M.npy --data_dirs /home/user/data_real/gears_fmt/replogle_rpe1.h5ad /home/user/data_real/gears_fmt/tian2021_crispri.h5ad --out_json results/feature_sweep_innerval.json --seeds 0 1 2",
+    "argv": [
+      "tools/sweep_graph_features.py",
+      "--esm_table",
+      "/home/user/data_real/esm2_150M_human.pt",
+      "--neighbors",
+      "/home/user/data_real/string_neighbors_150M.npy",
+      "--data_dirs",
+      "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad",
+      "--out_json",
+      "results/feature_sweep_innerval.json",
+      "--seeds",
+      "0",
+      "1",
+      "2"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "esm_table": "/home/user/data_real/esm2_150M_human.pt",
+      "neighbors": "/home/user/data_real/string_neighbors_150M.npy",
+      "data_dirs": [
+        "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+        "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+      ],
+      "out_json": "results/feature_sweep_innerval.json",
+      "n_hvg": 500,
+      "min_cells": 1,
+      "split_by": "target_gene",
+      "hvg_from": "train",
+      "test_frac": 0.15,
+      "inner_val_frac": 0.15,
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "ridge_alpha": 1.0
+    },
+    "warning": "the working tree was dirty when this result was produced, so the recorded revision does not fully describe the code that ran"
+  }
+}

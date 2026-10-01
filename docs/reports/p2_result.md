@@ -1,5 +1,7 @@
 # VCPE-rna P2 Training Result (G2' Verdict Report)
 
+> **Note.** The retraction recorded below stands and is the most durable result in this project. Two further instances of the same shared-component failure mode were later found in code written *after* this erratum — see [../ERRATA.md](../ERRATA.md), E4 and E6. The `diag_fc.py` output quoted here carried a mislabelled row (E12k).
+
 - Date: 2026-09-01
 - Setup: P1 cosine-best ckpt start + dual-axis conditioning (mechanism axis ESM2+KG ⊕ sequence axis
   self-trained RNA encoder), lr 5e-5 (base) / 1e-4 (rna branch), AMP off, fp32, 20 epochs

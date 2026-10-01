@@ -1,0 +1,87 @@
+{
+  "figures": [
+    {
+      "name": "Fig. 1",
+      "stem": "fig1_design",
+      "paths": [
+        "/home/user/VCPE-rna/figures/fig1_design.pdf",
+        "/home/user/VCPE-rna/figures/fig1_design.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 92.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    },
+    {
+      "name": "Fig. 2",
+      "stem": "fig2_main",
+      "paths": [
+        "/home/user/VCPE-rna/figures/fig2_main.pdf",
+        "/home/user/VCPE-rna/figures/fig2_main.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 78.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    },
+    {
+      "name": "Fig. 3",
+      "stem": "fig3_mechanism",
+      "paths": [
+        "/home/user/VCPE-rna/figures/fig3_mechanism.pdf",
+        "/home/user/VCPE-rna/figures/fig3_mechanism.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 82.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    },
+    {
+      "name": "Fig. 4",
+      "stem": "fig4_robustness",
+      "paths": [
+        "/home/user/VCPE-rna/figures/fig4_robustness.pdf",
+        "/home/user/VCPE-rna/figures/fig4_robustness.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 80.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    },
+    {
+      "name": "Fig. 5",
+      "stem": "fig5_diagnostics",
+      "paths": [
+        "/home/user/VCPE-rna/figures/fig5_diagnostics.pdf",
+        "/home/user/VCPE-rna/figures/fig5_diagnostics.png"
+      ],
+      "width_mm": 183.0,
+      "height_mm": 76.0,
+      "column_class": "double",
+      "warnings": [],
+      "font": {
+        "font": "Liberation Sans",
+        "font_is_metric_clone_of_arial": true
+      }
+    }
+  ],
+  "font_note": "Arial/Helvetica are not installed in this container. Liberation Sans is metrically identical to Arial, so the layout is unchanged when a production system substitutes real Arial. Text is embedded as Type 42 and remains selectable and editable in the PDFs.",
+  "data_note": "Every value is read from results/**/*.json by tools/figures/figdata.py. No measurement is typed into the plotting code.",
+  "git": "362bbf4"
+}

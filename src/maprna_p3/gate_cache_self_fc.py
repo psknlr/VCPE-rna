@@ -1,31 +1,44 @@
 #!/usr/bin/env python
-"""VCPE V2-0a: 平台 cache 靶基因自响应表达门控（后处理，无需 GPU 重推理）。
+"""VCPE V2-0a: expression gating of the target gene's self-response in the
+platform cache (post-process, no GPU re-inference required).
 
-背景（2026-09-04 诊断）：VCPE P2.3-B 的 is_target 特征从 CRISPRi 训练数据学得
-"被扰动基因自身强下调"先验，迁移到低表达语境时失真（如 APOC3 在 K562 近零
-表达仍预测 self_fc=-0.60，ALB/TTR/SERPINA1 同类失真）。CRISPRi 里 guide 直接
-压启动子、靶基因必然沉默，这是模态真实差异——敲不掉不存在的 RNA。
+Background (2026-09-04 diagnosis): the is_target feature of VCPE P2.3-B learned
+a "the perturbed gene itself is strongly down-regulated" prior from the CRISPRi
+training data, which becomes distorted when transferred to a low-expression
+context (e.g. APOC3 has near-zero expression in K562 and self_fc=-0.60 is still
+predicted; ALB/TTR/SERPINA1 are distorted in the same way). In CRISPRi the guide
+directly represses the promoter and the target gene is necessarily silenced;
+this is a genuine difference between modalities -- RNA that is not there cannot
+be knocked down.
 
-门控规则（只作用于靶基因自身条目 self-entry，不动 trans 响应）：
-  1) panel 基因（语境 h5ad ctrl 有测量）：gate = min(1, expr_log1p / FLOOR)
-     expr 为 ctrl 细胞 pseudobulk 均值（CP10K+log1p 空间），FLOOR 默认 0.7。
-  2) panel 外基因（Perturb-seq panel 不含，恰是组织特异基因聚集区）：
-     用本地 Protein Atlas tissue specificity——若类别为 "Tissue enriched" 且
-     富集组织谱系与查询语境谱系不匹配（如 liver-enriched 基因 × K562 血系），
-     gate = 0.15；其余（Group enriched / Tissue enhanced / 低特异性）不门控。
-  最终 self_fc *= gate，并重排 top_up/top_down。
+Gating rules (they act only on the target gene's own entry, the self-entry, and
+leave trans responses untouched):
+  1) panel genes (measured in the context h5ad ctrl): gate = min(1,
+     expr_log1p / FLOOR); expr is the pseudobulk mean over ctrl cells (in
+     CP10K+log1p space), FLOOR defaults to 0.7.
+  2) off-panel genes (not contained in the Perturb-seq panel, which is exactly
+     where tissue-specific genes cluster): use the local Protein Atlas tissue
+     specificity -- if the category is "Tissue enriched" and the lineage of the
+     enriched tissue does not match the queried context's lineage (e.g. a
+     liver-enriched gene × the K562 blood lineage), gate = 0.15; everything
+     else (Group enriched / Tissue enhanced / low specificity) is not gated.
+  Finally self_fc *= gate, and top_up/top_down are re-sorted.
 
-用法：
+Usage:
   python gate_cache_self_fc.py --cache <vcpe_cache_v3_k562a.json.gz> \
       --expr_h5ad <proc h5ad> --context k562a [--apply]
-默认 dry-run 只打印报告；--apply 时先备份到同目录 backups_v2_0a/ 再写回。
+By default the dry-run only prints the report; with --apply the file is first
+backed up into backups_v2_0a/ in the same directory and then written back.
 
-验收判据（V2-0a go/no-go）：
-  - k562a: APOC3/ALB/TTR/SERPINA1 self|fc| 0.20~0.60 → ≤0.15；MYC/RPL13A 不变
-  - hepg2: ALB（panel 内、肝语境高表达）self_fc 不变（差分验证）
+Acceptance criteria (V2-0a go/no-go):
+  - k562a: APOC3/ALB/TTR/SERPINA1 self|fc| 0.20~0.60 → ≤0.15; MYC/RPL13A
+    unchanged
+  - hepg2: ALB (in panel, highly expressed in the liver context) self_fc
+    unchanged (differential check)
 """
 import argparse
 import gzip
+import os
 import json
 import shutil
 from pathlib import Path
@@ -33,14 +46,22 @@ from pathlib import Path
 import anndata as ad
 import numpy as np
 
-FLOOR = 0.7                 # panel 表达门控阈值（log1p CP10K）
-FLAG_NEAR_ZERO = 0.1        # UI 警示阈值：仅近零表达才亮"低表达语境"徽章（分布校准后）
-MISMATCH_GATE = 0.15        # Tissue-enriched × 谱系不匹配时的压制系数
-HPA_TSV = (Path(__file__).resolve().parents[4]
-           / "rna_platform" / "bio_literature" / "bundles"
-           / "protein_atlas" / "proteinatlas.tsv")
+FLOOR = 0.7                 # panel expression gating threshold (log1p CP10K)
+FLAG_NEAR_ZERO = 0.1        # UI warning threshold: only near-zero expression
+                            # lights the "low-expression context" badge
+                            # (after distribution calibration)
+MISMATCH_GATE = 0.15        # suppression factor for Tissue-enriched × lineage
+                            # mismatch
+# Human Protein Atlas TSV. Previously hard-coded to `parents[4]/rna_platform/...`
+# -- a directory OUTSIDE this repository, on the author's machine, with no CLI
+# override and no existence check, so this script raised FileNotFoundError for
+# every other user. Resolution order is now: --hpa_tsv, then $VCPE_HPA_TSV, then
+# data/protein_atlas/proteinatlas.tsv inside the repo. Download it from
+# https://www.proteinatlas.org/about/download (proteinatlas.tsv.zip).
+DEFAULT_HPA_TSV = (Path(__file__).resolve().parents[2]
+                   / "data" / "protein_atlas" / "proteinatlas.tsv")
 
-# 语境谱系关键词（HPA 组织名子串匹配）
+# Context lineage keywords (substring match against HPA tissue names)
 CONTEXT_LINEAGE = {
     "k562a": ("bone marrow", "blood", "lymphoid", "spleen", "thymus"),
     "k562g": ("bone marrow", "blood", "lymphoid", "spleen", "thymus"),
@@ -50,7 +71,7 @@ CONTEXT_LINEAGE = {
 
 
 def load_panel_expr(h5ad_fp):
-    """语境 ctrl 细胞 pseudobulk 表达（基因 -> log1p(CP10K) 均值）。"""
+    """Pseudobulk expression of the context ctrl cells (gene -> mean log1p(CP10K))."""
     a = ad.read_h5ad(h5ad_fp, backed="r")
     obs = a.obs
     if "control" in obs.columns:
@@ -68,14 +89,41 @@ def load_panel_expr(h5ad_fp):
     return dict(zip(genes, map(float, expr)))
 
 
-def load_hpa_tissue_enriched():
-    """Protein Atlas：Tissue enriched 基因 -> 富集组织列表（仅不匹配时需要）。"""
+def resolve_hpa_tsv(explicit=None):
+    """Locate the HPA TSV, or fail with an actionable message."""
+    for cand in (explicit, os.environ.get("VCPE_HPA_TSV"), DEFAULT_HPA_TSV):
+        if cand and Path(cand).is_file():
+            return Path(cand)
+    raise FileNotFoundError(
+        "Human Protein Atlas TSV not found. Pass --hpa_tsv, set $VCPE_HPA_TSV, "
+        f"or place proteinatlas.tsv at {DEFAULT_HPA_TSV}. Download it from "
+        "https://www.proteinatlas.org/about/download (proteinatlas.tsv.zip).")
+
+
+def _column_index(header, name):
+    """Match a column whether or not the export quotes its header.
+
+    The released HPA TSV quotes multi-word headers, and this parser used to look
+    up the literal string '"RNA tissue specificity"' including the quote
+    characters, which breaks the moment the export style changes.
+    """
+    for i, h in enumerate(header):
+        if h.strip().strip('"') == name:
+            return i
+    raise KeyError(
+        f"column {name!r} not found in the HPA TSV header; got "
+        f"{[h.strip().strip(chr(34)) for h in header][:8]}...")
+
+
+def load_hpa_tissue_enriched(hpa_tsv=None):
+    """Protein Atlas: tissue-enriched gene -> list of enriched tissues."""
     out = {}
-    with open(HPA_TSV, encoding="utf-8") as f:
+    path = resolve_hpa_tsv(hpa_tsv)
+    with open(path, encoding="utf-8") as f:
         header = f.readline().rstrip("\n").split("\t")
-        i_gene = header.index("Gene")
-        i_spec = header.index('"RNA tissue specificity"')
-        i_ntpm = header.index('"RNA tissue specific nTPM"')
+        i_gene = _column_index(header, "Gene")
+        i_spec = _column_index(header, "RNA tissue specificity")
+        i_ntpm = _column_index(header, "RNA tissue specific nTPM")
         for line in f:
             parts = line.rstrip("\n").split("\t")
             if len(parts) <= i_ntpm:
@@ -91,7 +139,7 @@ def load_hpa_tissue_enriched():
 
 
 def lineage_gate(gene, hpa, lineage_kw):
-    """panel 外基因：Tissue enriched 且富集组织谱系全不匹配 → MISMATCH_GATE。"""
+    """Off-panel gene: Tissue enriched, all enriched lineages mismatch → MISMATCH_GATE."""
     tissues = hpa.get(gene)
     if not tissues:
         return 1.0, "off-panel/no-tissue-enriched"
@@ -100,7 +148,7 @@ def lineage_gate(gene, hpa, lineage_kw):
     return MISMATCH_GATE, "off-panel/lineage-mismatch"
 
 
-def gate_cache(cache_fp, expr_h5ad, context, apply=False):
+def gate_cache(cache_fp, expr_h5ad, context, apply=False, hpa_tsv=None):
     cache_fp = Path(cache_fp)
     with gzip.open(cache_fp, "rt", encoding="utf-8") as f:
         cache = json.load(f)
@@ -110,19 +158,21 @@ def gate_cache(cache_fp, expr_h5ad, context, apply=False):
     print(f"[expr] loading ctrl pseudobulk from {Path(expr_h5ad).name} ...")
     panel_expr = load_panel_expr(expr_h5ad)
     print(f"[expr] panel genes with ctrl mean: {len(panel_expr)}")
-    hpa = load_hpa_tissue_enriched()
+    hpa = load_hpa_tissue_enriched(hpa_tsv)
     print(f"[hpa]  tissue-enriched genes: {len(hpa)}")
 
     report = {"panel_gated": [], "lineage_gated": [], "unchanged_self": 0}
     expr_flags = {}
     for gene, entry in genes.items():
-        # 表达标志（不论有无 self-entry 都记录，用于平台查询时"低表达语境"警示）
+        # Expression flag (recorded whether or not there is a self-entry; used
+        # for the "low-expression context" warning on platform queries)
         e = panel_expr.get(gene)
         if e is not None:
             if e < FLAG_NEAR_ZERO:
                 expr_flags[gene] = {
                     "level": "near_zero",
-                    "detail": f"ctrl 表达 log1p={e:.2f}（本语境近零表达）",
+                    "detail": f"ctrl expression log1p={e:.2f} "
+                              f"(near-zero expression in this context)",
                     "gate": round(min(1.0, e / FLOOR), 3),
                 }
         else:
@@ -130,13 +180,14 @@ def gate_cache(cache_fp, expr_h5ad, context, apply=False):
             if lg < 0.999:
                 expr_flags[gene] = {
                     "level": "lineage_mismatch",
-                    "detail": "组织富集基因（Protein Atlas Tissue enriched）与本语境谱系不匹配",
+                    "detail": "tissue-enriched gene (Protein Atlas Tissue "
+                              "enriched) does not match this context's lineage",
                     "gate": lg,
                 }
         tu, td = entry.get("top_up", []), entry.get("top_down", [])
         if not tu and not td:
             continue
-        # self-entry：值列表中基因名 == 靶基因自身
+        # self-entry: the gene name in the value list == the target gene itself
         e = panel_expr.get(gene)
         if e is not None:
             gate = min(1.0, e / FLOOR)
@@ -153,7 +204,8 @@ def gate_cache(cache_fp, expr_h5ad, context, apply=False):
                     lst[i] = [gn, round(v * gate, 6)]
                     changed = True
         if changed:
-            # 重排（top_up 降序 / top_down 升序）保持榜单有序
+            # re-sort (top_up descending / top_down ascending) to keep the
+            # ranked lists ordered
             entry["top_up"] = sorted(tu, key=lambda x: -x[1])
             entry["top_down"] = sorted(td, key=lambda x: x[1])
             item = (gene, src, gate)
@@ -163,11 +215,11 @@ def gate_cache(cache_fp, expr_h5ad, context, apply=False):
     print(f"[gate] panel-gated self entries: {n_p} | lineage-gated: {n_l} "
           f"| unchanged/no-self: {report['unchanged_self']}")
 
-    # 验收集
-    print("\n[verify] 关键基因自响应（门控后）：")
+    # acceptance set
+    print("\n[verify] self-response of the key genes (after gating):")
     for g in ("APOC3", "ALB", "TTR", "SERPINA1", "PCSK9", "MYC", "RPL13A", "HBZ"):
         if g not in genes:
-            print(f"  {g:10s} (不在该语境 cache)")
+            print(f"  {g:10s} (not in this context's cache)")
             continue
         entry = genes[g]
         for lst, tag in ((entry.get("top_up", []), "up"), (entry.get("top_down", []), "down")):
@@ -178,7 +230,8 @@ def gate_cache(cache_fp, expr_h5ad, context, apply=False):
                           f"panel_expr={e if e is not None else 'off-panel'}")
 
     if not apply:
-        print("\n[dry-run] 未写入。加 --apply 落盘（自动备份到 backups_v2_0a/）。")
+        print("\n[dry-run] nothing written. Add --apply to persist "
+              "(with an automatic backup into backups_v2_0a/).")
         return
 
     cache["self_fc_gating"] = {
@@ -212,5 +265,10 @@ if __name__ == "__main__":
     p.add_argument("--expr_h5ad", required=True)
     p.add_argument("--context", required=True, choices=list(CONTEXT_LINEAGE))
     p.add_argument("--apply", action="store_true")
+    p.add_argument("--hpa_tsv", default=None,
+                   help="Human Protein Atlas proteinatlas.tsv; "
+                        "defaults to $VCPE_HPA_TSV then "
+                        "data/protein_atlas/proteinatlas.tsv")
     args = p.parse_args()
-    gate_cache(args.cache, args.expr_h5ad, args.context, apply=args.apply)
+    gate_cache(args.cache, args.expr_h5ad, args.context, apply=args.apply,
+               hpa_tsv=args.hpa_tsv)

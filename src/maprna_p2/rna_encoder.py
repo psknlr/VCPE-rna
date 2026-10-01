@@ -64,7 +64,8 @@ def load_fasta_symbol_seqs(fasta_path):
 
 
 def _store(header, seq, symbol_map, ensembl_map):
-    """同符号多转录本时保留最长序列（确定性，信息量最大）。"""
+    """When one symbol has several transcripts, keep the longest sequence
+    (deterministic, maximum information content)."""
     def put(d, k):
         if k not in d or len(seq) > len(d[k]):
             d[k] = seq

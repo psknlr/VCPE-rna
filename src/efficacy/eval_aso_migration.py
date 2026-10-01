@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 TPM = os.path.join(REPO_ROOT, "data", "aso_tx_validation",
                    "GSE183535_MYCASO_RNAseq_TPM_table.csv.gz")
-CACHE = os.path.join(REPO_ROOT, "vcpe_cache_v4_k562a.json.gz")  # v4: p3_v21b 七数据集门控版
+CACHE = os.path.join(REPO_ROOT, "vcpe_cache_v4_k562a.json.gz")  # v4: p3_v21b 7-dataset gated version
 MAP_CACHE = os.path.join(HERE, "refseq2symbol_cache.json")
 MYC_REFSEQ = "NM_002467"
 
@@ -144,7 +144,8 @@ def main():
         else:
             rho = float("nan")
         print(f"\n[common-core vs NTASO stress] n={len(rows_core)} pearson {rho:.3f} "
-              f"(high = 共性核≈ASO 转染应激, 扣除逻辑自洽)", flush=True)
+              f"(a high value means the common core is close to the ASO transfection "
+          "stress response, so subtracting it is self-consistent)", flush=True)
 
     print("\nDONE", flush=True)
 

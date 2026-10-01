@@ -32,7 +32,12 @@ for _sib in ("maprna_p1", "maprna_p2", "."):
         sys.path.insert(0, str(_p))
 
 from ds_knockdown import build_symbol2row, load_kd_datasets, make_hvg_list, resolve_pert_row  # noqa: E402
-from model_dev import DeviationModel, load_esm_matrix  # noqa: E402
+from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
+from baselines import run_all  # noqa: E402
+from eval_metrics import (  # noqa: E402
+    per_item_correlation, pooled_correlation, top_k_overlap)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from provenance import stamp, write_json  # noqa: E402
 
 
 def parse_args():
@@ -52,32 +57,49 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight_decay", type=float, default=1e-2)
     p.add_argument("--test_frac", type=float, default=0.15)
+    p.add_argument("--split_by", type=str, default="target_gene",
+                   choices=["target_gene", "pert"],
+                   help="target_gene (default): hold out whole target genes, so a "
+                        "test perturbation is genuinely unseen. pert: the pre-v4 "
+                        "(dataset, condition) split, which lets the same gene appear "
+                        "in both splits via the genome-wide screen -- kept only for "
+                        "reproducing historical numbers.")
     p.add_argument("--min_cells", type=int, default=3)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--inner_val_frac", type=float, default=0.15,
+                   help="fraction of TRAINING items held out for epoch/checkpoint "
+                        "selection; the test split is scored once, afterwards")
+    p.add_argument("--no_mask", dest="use_mask", action="store_false", default=True,
+                   help="reproduce the pre-v4 behaviour in which HVG columns a "
+                        "dataset never measured entered the loss and every metric "
+                        "unmasked. Those columns carry a per-dataset CONSTANT "
+                        "target (dev == -common_fc) with no perturbation-specific "
+                        "content, so scoring them rewards reproducing that "
+                        "constant. Provided so the size of that inflation can be "
+                        "measured on real data by flipping this one flag "
+                        "(docs/ERRATA.md E6); it is not a configuration to train "
+                        "for release.\n")
+    p.add_argument("--knn_k", type=int, default=10,
+                   help="neighbours for the ESM2 retrieval control baseline")
+    p.add_argument("--hvg_from", choices=("train", "all"), default="train",
+                   help="which perturbations the response panel is ranked on. train "
+                        "(default) is correct. all reproduces the earlier behaviour, "
+                        "in which the 2000 genes the model is scored on were chosen "
+                        "by variance across every perturbation including the held-out "
+                        "ones -- feature selection with the test split visible "
+                        "(docs/ERRATA.md E15). Kept so that effect can be measured.")
     p.add_argument("--d_model", type=int, default=256)
     return p.parse_args()
 
 
 # ---------------- data ----------------
 
-def build_dev_data(args):
-    sym2row, esm_dim = build_symbol2row(args.esm_table)
-    kd = load_kd_datasets(args.data_dirs, sym2row, min_cells=args.min_cells)
-    hvg_rows = make_hvg_list(kd, n_hvg=args.n_hvg)
+def split_items(args, kd, sym2row):
+    """All usable (dataset, condition) items and their train/test split.
 
-    # dataset-level control mean over HVG (deterministic ctrl baseline)
-    ctrl_mean = np.zeros((len(kd["X_ctrl"]), len(hvg_rows)), dtype=np.float32)
-    for di, (Xc, rows) in enumerate(zip(kd["X_ctrl"], kd["row_of_gene"])):
-        cm = Xc.mean(axis=0)
-        row2col = {int(r): c for c, r in enumerate(rows)}
-        for hi, hr in enumerate(hvg_rows):
-            c = row2col.get(int(hr))
-            if c is not None:
-                ctrl_mean[di, hi] = cm[c]
-    # z-score across genes within each dataset (feature scale for the MLP)
-    mu, sd = ctrl_mean.mean(axis=1, keepdims=True), ctrl_mean.std(axis=1, keepdims=True) + 1e-6
-    ctrl_feat_all = (ctrl_mean - mu) / sd
-
+    Separated out so that it can run before the response panel is chosen; see
+    build_dev_data.
+    """
     # perturbation items: all (ds, condition) with enough cells and a resolvable target
     items = []
     for di in range(len(kd["X_pert"])):
@@ -95,42 +117,138 @@ def build_dev_data(args):
             items.append((di, cond))
     rng = np.random.default_rng(args.seed)
     items = sorted(items)
-    rng.shuffle(items)
-    n_test = max(1, int(round(len(items) * args.test_frac)))
-    test_items, train_items = sorted(items[:n_test]), sorted(items[n_test:])
+    if args.split_by == "target_gene":
+        # Group by the ESM2 row the condition resolves to, i.e. by target gene,
+        # so that no target gene appears on both sides of the split.
+        #
+        # Why this matters: the expanded training set includes Replogle gwps, a
+        # genome-wide K562 screen that covers essentially every target gene in
+        # the legacy adamson/norman/replogle_ess datasets. Splitting on
+        # (dataset, condition) pairs -- the pre-v4 behaviour, still available as
+        # --split_by pert -- therefore lets the SAME target gene sit in train
+        # (via gwps) and in test (via a legacy dataset). Since a perturbation is
+        # represented to the model only by (pert_row, rna_emb), such a test item
+        # is not unseen. Any "unseen perturbation" claim requires split_by
+        # target_gene.
+        by_gene = {}
+        for di, cond in items:
+            by_gene.setdefault(resolve_pert_row(sym2row, cond), []).append((di, cond))
+        genes = sorted(by_gene)
+        rng.shuffle(genes)
+        n_test_g = max(1, int(round(len(genes) * args.test_frac)))
+        test_genes = set(genes[:n_test_g])
+        test_items = sorted(it for g in test_genes for it in by_gene[g])
+        train_items = sorted(it for g in genes[n_test_g:] for it in by_gene[g])
+        print(f"[split] by target_gene: {len(genes)} genes -> "
+              f"train {len(train_items)} items / test {len(test_items)} items "
+              f"({n_test_g} held-out genes)", flush=True)
+    else:
+        rng.shuffle(items)
+        n_test = max(1, int(round(len(items) * args.test_frac)))
+        test_items, train_items = sorted(items[:n_test]), sorted(items[n_test:])
+        overlap = (set(resolve_pert_row(sym2row, c) for _, c in train_items)
+                   & set(resolve_pert_row(sym2row, c) for _, c in test_items))
+        print(f"[split] by (dataset, condition): train {len(train_items)} / "
+              f"test {len(test_items)} | WARNING: {len(overlap)} target genes "
+              f"appear in BOTH splits -- results are not an unseen-gene estimate; "
+              f"use --split_by target_gene for that.", flush=True)
+    return train_items, test_items
 
-    # targets: deterministic pert-mean over HVG
+
+def build_dev_data(args):
+    sym2row, esm_dim = build_symbol2row(args.esm_table)
+    kd = load_kd_datasets(args.data_dirs, sym2row, min_cells=args.min_cells)
+
+    # The split is decided BEFORE the response panel, so that the panel can be
+    # ranked on training perturbations only (docs/ERRATA.md E15). It needs nothing
+    # but the perturbation labels, and it draws from a generator of its own, so
+    # moving it here leaves the split itself unchanged.
+    train_items, test_items = split_items(args, kd, sym2row)
+    if getattr(args, "hvg_from", "train") == "train":
+        tr_set = set(train_items)
+        keep_rows = []
+        for di in range(len(kd["X_pert"])):
+            cp = kd["pert_labels"][di]
+            keep_rows.append(np.array([k for k, c in enumerate(cp)
+                                       if (di, str(c)) in tr_set], dtype=np.int64))
+        hvg_rows = make_hvg_list(kd, n_hvg=args.n_hvg, keep_rows=keep_rows)
+        print(f"[hvg] panel ranked on {sum(len(k) for k in keep_rows)} TRAINING "
+              f"perturbations only", flush=True)
+    else:
+        hvg_rows = make_hvg_list(kd, n_hvg=args.n_hvg)
+        print("[hvg] WARNING: panel ranked on ALL perturbations including the held-out "
+              "genes, so the genes the model is scored on were chosen with the test "
+              "split visible. Kept only to measure that effect (ERRATA E15); use "
+              "--hvg_from train.", flush=True)
+
+    # dataset-level control mean over HVG (deterministic ctrl baseline)
+    ctrl_mean = np.zeros((len(kd["X_ctrl"]), len(hvg_rows)), dtype=np.float32)
+    for di, (Xc, rows) in enumerate(zip(kd["X_ctrl"], kd["row_of_gene"])):
+        cm = Xc.mean(axis=0)
+        row2col = {int(r): c for c, r in enumerate(rows)}
+        cols = np.array([row2col.get(int(hr), -1) for hr in hvg_rows], dtype=np.int64)
+        ok = cols >= 0
+        ctrl_mean[di, ok] = cm[cols[ok]]
+    # z-score across genes within each dataset (feature scale for the MLP)
+    mu, sd = ctrl_mean.mean(axis=1, keepdims=True), ctrl_mean.std(axis=1, keepdims=True) + 1e-6
+    ctrl_feat_all = (ctrl_mean - mu) / sd
+
+
+    # Per-dataset lookups, built once. Both of these used to be rebuilt inside the
+    # per-item loops below, which is quadratic in a way that only shows up on a real
+    # dataset: 2204 perturbations x an 8749-entry dict, and 2204 recomputations of a
+    # 3000 x 8749 control mean. On Replogle RPE1 that is tens of billions of
+    # redundant float operations before a single training step.
+    row2col_ds = [{int(r): c for c, r in enumerate(rows)}
+                  for rows in kd["row_of_gene"]]
+    ctrl_mean_full = [Xc.mean(axis=0) for Xc in kd["X_ctrl"]]
+    hvg_col_ds = [np.array([r2c.get(int(hr), -1) for hr in hvg_rows], dtype=np.int64)
+                  for r2c in row2col_ds]
+
+    # targets: deterministic pert-mean over HVG.
+    # `measured` marks HVG columns actually present in that item's dataset panel.
+    # Unmeasured columns stay 0, which makes fc == 0 and dev == -common_fc,
+    # a value that is constant across every perturbation of the dataset and
+    # carries no perturbation-specific signal. Pre-v4 those columns entered the
+    # loss and every metric unmasked, so a model could score on them using
+    # ds_emb + ctrl_feat alone -- the same shared-component inflation the P2
+    # erratum documented, one level down.
     def targets_of(split_items):
         T = np.zeros((len(split_items), len(hvg_rows)), dtype=np.float32)
+        M = np.zeros((len(split_items), len(hvg_rows)), dtype=bool)
         rows_p = np.zeros(len(split_items), dtype=np.int64)
         for k, (di, cond) in enumerate(split_items):
             cp = kd["pert_labels"][di]
             idx = np.where(cp == cond)[0]
             mean = kd["X_pert"][di][idx].mean(axis=0)
-            row2col = {int(r): c for c, r in enumerate(kd["row_of_gene"][di])}
-            for hi, hr in enumerate(hvg_rows):
-                c = row2col.get(int(hr))
-                if c is not None:
-                    T[k, hi] = mean[c]
+            cols = hvg_col_ds[di]                      # [n_hvg], -1 where unmeasured
+            ok = cols >= 0
+            T[k, ok] = mean[cols[ok]]
+            M[k] = ok
             rows_p[k] = resolve_pert_row(sym2row, cond)
-        return T, rows_p
+        return T, rows_p, M
 
-    T_tr, rows_tr = targets_of(train_items)
-    T_te, rows_te = targets_of(test_items)
+    T_tr, rows_tr, mask_tr = targets_of(train_items)
+    T_te, rows_te, mask_te = targets_of(test_items)
+    print(f"[mask] measured HVG fraction: train {mask_tr.mean():.3f} "
+          f"test {mask_te.mean():.3f} (unmeasured columns are excluded from "
+          f"loss and metrics)", flush=True)
 
-    # V2-1a: 靶基因自身 ctrl 表达（raw log1p，供 self-response 门控）。
-    # 目标基因在所属数据集 panel 内 -> 取该列 ctrl 均值；panel 外 -> 0.0
-    #（此时目标一般也不在 HVG 响应 panel，is_tgt 行不存在，门控不起作用，安全）。
+    # V2-1a: ctrl expression of the target gene itself (raw log1p, feeds the
+    # self-response gate).
+    # Target gene inside the panel of its own dataset -> take that column's ctrl
+    # mean; outside the panel -> 0.0
+    # (in that case the target is usually not in the HVG response panel either,
+    # so there is no is_tgt row, the gate does not act, and this is safe).
     def pert_expr_of(split_items):
         E = np.zeros(len(split_items), dtype=np.float32)
         for k, (di, cond) in enumerate(split_items):
             r = resolve_pert_row(sym2row, cond)
             if r < 0:
                 continue
-            row2col = {int(rr): c for c, rr in enumerate(kd["row_of_gene"][di])}
-            c = row2col.get(int(r))
+            c = row2col_ds[di].get(int(r))
             if c is not None:
-                E[k] = float(kd["X_ctrl"][di].mean(axis=0)[c])
+                E[k] = float(ctrl_mean_full[di][c])
         return E
 
     pert_expr_tr = pert_expr_of(train_items)
@@ -140,19 +258,48 @@ def build_dev_data(args):
           f"| near-zero(<0.1) train {int((pert_expr_tr < 0.1).sum())}/{len(pert_expr_tr)}",
           flush=True)
 
-    # full fc and residual targets (train-only common core)
+    # full fc and residual targets (train-only common core).
+    # The common core is a MASKED mean: averaging raw zeros from unmeasured
+    # columns would shrink it toward zero on exactly those genes that are
+    # panel-specific, distorting the residual everywhere downstream.
     fc_tr = T_tr - ctrl_mean[np.array([di for di, _ in train_items])]
     fc_te = T_te - ctrl_mean[np.array([di for di, _ in test_items])]
-    common_fc = fc_tr.mean(axis=0)
+    denom = mask_tr.sum(axis=0)
+    common_fc = np.where(denom > 0, (fc_tr * mask_tr).sum(axis=0) / np.maximum(denom, 1), 0.0)
+    common_fc = common_fc.astype(np.float32)
     dev_tr, dev_te = fc_tr - common_fc, fc_te - common_fc
-    print(f"[P2.3-B] common fc (train-only): std={common_fc.std():.4f} "
-          f"max|.|={np.abs(common_fc).max():.4f}", flush=True)
+    n_never = int((denom == 0).sum())
+    print(f"[P2.3-B] common fc (train-only, masked): std={common_fc.std():.4f} "
+          f"max|.|={np.abs(common_fc).max():.4f} | HVG columns never measured in "
+          f"train: {n_never}/{len(hvg_rows)}", flush=True)
+
+    # Inner validation split for epoch/checkpoint selection, carved out of the
+    # TRAINING items and grouped the same way as the outer split. Selecting the
+    # checkpoint on the test split -- the pre-v4 behaviour -- turns the reported
+    # pearson_dev into a maximum over epochs rather than an estimate.
+    rng_in = np.random.default_rng(args.seed + 977)
+    if args.split_by == "target_gene":
+        tr_genes = sorted({resolve_pert_row(sym2row, c) for _, c in train_items})
+        rng_in.shuffle(tr_genes)
+        n_in = max(1, int(round(len(tr_genes) * args.inner_val_frac)))
+        val_genes = set(tr_genes[:n_in])
+        is_inner_val = np.array([resolve_pert_row(sym2row, c) in val_genes
+                                 for _, c in train_items])
+    else:
+        perm = rng_in.permutation(len(train_items))
+        n_in = max(1, int(round(len(train_items) * args.inner_val_frac)))
+        is_inner_val = np.zeros(len(train_items), dtype=bool)
+        is_inner_val[perm[:n_in]] = True
+    print(f"[split] inner-val for selection: {int(is_inner_val.sum())} of "
+          f"{len(train_items)} training items (test split is scored once, at the "
+          f"selected epoch)", flush=True)
 
     return dict(sym2row=sym2row, esm_dim=esm_dim, hvg_rows=hvg_rows,
                 ctrl_feat_all=ctrl_feat_all, train_items=train_items,
                 test_items=test_items, rows_tr=rows_tr, rows_te=rows_te,
                 pert_expr_tr=pert_expr_tr, pert_expr_te=pert_expr_te,
                 fc_tr=fc_tr, fc_te=fc_te, dev_tr=dev_tr, dev_te=dev_te,
+                mask_tr=mask_tr, mask_te=mask_te, is_inner_val=is_inner_val,
                 common_fc=common_fc, n_ds=len(kd["X_ctrl"]))
 
 
@@ -189,19 +336,41 @@ def make_rna_emb_lookup(args, data):
 # ---------------- eval ----------------
 
 @torch.no_grad()
-def evaluate(model, data, split, device, esm_override_mode=None):
-    rows = data["rows_te"] if split == "test" else data["rows_tr"]
-    fc = data["fc_te"] if split == "test" else data["fc_tr"]
-    dev = data["dev_te"] if split == "test" else data["dev_tr"]
-    items = data["test_items"] if split == "test" else data["train_items"]
+def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
+    """split: 'test' | 'train' | 'inner_val' | 'inner_train'.
+
+    'inner_val' is the slice used for epoch/checkpoint selection; 'test' must be
+    scored once, after selection. Pre-v4 the checkpoint was saved on the best
+    'test' pearson_dev, making the reported value a maximum over epochs.
+    """
+    is_test = split == "test"
+    rows = data["rows_te"] if is_test else data["rows_tr"]
+    fc = data["fc_te"] if is_test else data["fc_tr"]
+    dev = data["dev_te"] if is_test else data["dev_tr"]
+    items = data["test_items"] if is_test else data["train_items"]
+    mask_all = data["mask_te"] if is_test else data["mask_tr"]
+    pe_all = data["pert_expr_te"] if is_test else data["pert_expr_tr"]
+    rna_all = None
+    if model.proj_r is not None:
+        rna_all = data["rna_embs"][len(data["train_items"]):] if is_test \
+            else data["rna_embs"][:len(data["train_items"])]
+
+    if split in ("inner_val", "inner_train"):
+        sel = data["is_inner_val"]
+        if split == "inner_train":
+            sel = ~sel
+        keep = np.flatnonzero(sel)
+        rows, fc, dev = rows[keep], fc[keep], dev[keep]
+        mask_all, pe_all = mask_all[keep], pe_all[keep]
+        items = [items[i] for i in keep]
+        if rna_all is not None:
+            rna_all = rna_all[torch.from_numpy(keep)]
+
     ds_idx = torch.tensor([di for di, _ in items], dtype=torch.long)
     pr = torch.tensor(rows, dtype=torch.long)
     cf = torch.from_numpy(data["ctrl_feat_all"][ds_idx.numpy()])
-    pe = torch.from_numpy(data["pert_expr_te"] if split == "test" else data["pert_expr_tr"])
-    rna = None
-    if model.proj_r is not None:
-        rna = data["rna_embs"][len(data["train_items"]):] if split == "test" \
-            else data["rna_embs"][:len(data["train_items"])]
+    pe = torch.from_numpy(pe_all)
+    rna = rna_all
 
     def _predict_chunks(pr, ds_idx, cf, rna, pe, ov=None, chunk=128):
         outs = []
@@ -223,28 +392,61 @@ def evaluate(model, data, split, device, esm_override_mode=None):
         ov = model.esm_table[pr[perm]]
         pred_dev = _predict_chunks(pr, ds_idx, cf, rna, pe, ov=ov)
 
+    # Restrict every metric to HVG columns actually measured in that item's
+    # dataset panel. Unmeasured columns have dev == -common_fc identically for
+    # every perturbation of the dataset, so scoring them rewards predicting a
+    # dataset-level constant and inflates the per-perturbation correlations.
+    # --no_mask restores the pre-v4 behaviour so the inflation can be measured.
+    # use_mask=False restores the pre-v4 behaviour so the inflation from
+    # unmeasured columns can be measured (docs/ERRATA.md E6).
+    mask = mask_all if use_mask else np.ones_like(mask_all, dtype=bool)
+
     pred_fc = pred_dev + data["common_fc"]
     out = {}
-    mse = np.mean((pred_fc - fc) ** 2, axis=1)
-    out["mse_DE"] = float(mse.mean())
-    out["mse_DE_baseline_ctrl"] = float(np.mean((fc) ** 2))
-    prs, tops = [], []
-    for b in range(len(fc)):
-        t, p = fc[b], pred_fc[b]
-        prs.append(float(np.corrcoef(t, p)[0, 1]) if t.std() > 1e-6 and p.std() > 1e-6 else 0.0)
-        k = 50
-        tops.append(len(set(np.argsort(-np.abs(t))[:k]) & set(np.argsort(-np.abs(p))[:k])) / k)
-    out["pearson_delta"], out["top50_deg_overlap"] = float(np.mean(prs)), float(np.mean(tops))
+    out["measured_fraction"] = float(mask.mean())
+
+    def _masked_mse(pred, true):
+        d2 = ((pred - true) ** 2) * mask
+        denom = np.maximum(mask.sum(axis=1), 1)
+        return float((d2.sum(axis=1) / denom).mean())
+
+    def _per_item(pred, true, k=50):
+        """Per-perturbation Pearson and top-k overlap over measured columns only.
+
+        The top-k term is skipped for items with fewer than 2k measured columns:
+        taking the top n of n gives 1.0 by construction, which reads as a perfect
+        score while carrying no information.
+        """
+        prs, tops = [], []
+        for b in range(len(true)):
+            m = mask[b]
+            if m.sum() < 10:
+                continue
+            t, p = true[b][m], pred[b][m]
+            if t.std() > 1e-6 and p.std() > 1e-6:
+                prs.append(float(np.corrcoef(t, p)[0, 1]))
+            else:
+                prs.append(0.0)
+            if len(t) >= 2 * k:
+                tops.append(len(set(np.argsort(-np.abs(t))[:k])
+                                & set(np.argsort(-np.abs(p))[:k])) / k)
+        if not prs:
+            return float("nan"), float("nan"), 0
+        top = float(np.mean(tops)) if tops else float("nan")
+        return float(np.mean(prs)), top, len(prs)
+
+    out["mse_DE"] = _masked_mse(pred_fc, fc)
+    out["mse_DE_baseline_ctrl"] = _masked_mse(np.zeros_like(fc), fc)
+    out["pearson_delta"], out["top50_deg_overlap"], _ = _per_item(pred_fc, fc)
     # dev metrics
-    mse_d = np.mean((pred_dev - dev) ** 2, axis=1)
-    out["mse_dev"] = float(mse_d.mean())
-    prd, topd = [], []
-    for b in range(len(dev)):
-        t, p = dev[b], pred_dev[b]
-        prd.append(float(np.corrcoef(t, p)[0, 1]) if t.std() > 1e-6 and p.std() > 1e-6 else 0.0)
-        k = 50
-        topd.append(len(set(np.argsort(-np.abs(t))[:k]) & set(np.argsort(-np.abs(p))[:k])) / k)
-    out["pearson_dev"], out["top50_dev"] = float(np.mean(prd)), float(np.mean(topd))
+    out["mse_dev"] = _masked_mse(pred_dev, dev)
+    pd_, td_, n_scored = _per_item(pred_dev, dev)
+    out["pearson_dev"], out["top50_dev"] = pd_, td_
+    out["n_scored_perturbations"] = n_scored
+    # Estimator label, so that this number is never silently compared against
+    # eval_fair.py's flattened pooled correlation -- they are different
+    # estimators and differ by ~1.5x on the same checkpoint.
+    out["pearson_dev_estimator"] = "mean_over_perturbations_of_within_perturbation_r"
     return out
 
 
@@ -288,6 +490,12 @@ def main():
                             lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     dev_tr_t = torch.from_numpy(data["dev_tr"]).float().to(device)
+    # Same masking rationale as in evaluate(): unmeasured HVG columns carry a
+    # dataset-level constant target and no perturbation-specific signal, so
+    # training on them teaches the model to reproduce that constant.
+    mask_tr_t = torch.from_numpy(
+        data["mask_tr"] if args.use_mask
+        else np.ones_like(data["mask_tr"])).float().to(device)
     ds_tr = torch.tensor([di for di, _ in data["train_items"]], dtype=torch.long)
     rows_tr = torch.tensor(data["rows_tr"], dtype=torch.long)
     cf_tr = torch.from_numpy(data["ctrl_feat_all"][ds_tr.numpy()]).float().to(device)
@@ -296,7 +504,32 @@ def main():
               if model.proj_r is not None else None)
 
     log_path = os.path.join(args.out_dir, "train_log.jsonl")
-    best_pd = -1.0
+    # The log is append-only, so a re-run into an existing out_dir concatenates two
+    # runs whose epoch numbers both start at 1 -- which is what happened when a
+    # killed 80-epoch run was resumed and left a log reading 1..74 then 1..80,
+    # unsplittable by anything reading it. ERRATA cites train_log.jsonl as
+    # evidence, so an ambiguous boundary is an E11-class traceability problem
+    # rather than cosmetic. History is kept; the boundary is made explicit and
+    # machine-readable instead. Consumers should take the records after the LAST
+    # run_start.
+    n_prior = 0
+    if os.path.exists(log_path):
+        with open(log_path) as f:
+            n_prior = sum(1 for _ in f)
+    with open(log_path, "a") as f:
+        f.write(json.dumps(dict(
+            run_start=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            prior_records_in_this_file=n_prior,
+            epochs_planned=args.epochs,
+            note="records after this line belong to one run; epoch numbering "
+                 "restarts here",
+            provenance=stamp(args=args))) + "\n")
+    if n_prior:
+        print(f"[log] {log_path} already held {n_prior} records from an earlier "
+              f"run; a run_start boundary was written so the two cannot be "
+              f"confused", flush=True)
+    best_pd, best_epoch = -float('inf'), -1
+    ckpt_path = os.path.join(args.out_dir, 'ckpt_p3_best_dev.pt')
     n = len(rows_tr)
     for epoch in range(args.epochs):
         model.train()
@@ -307,7 +540,8 @@ def main():
             pred = model(rows_tr[idx], ds_tr[idx], cf_tr[idx],
                          rna_emb=rna_tr[idx] if rna_tr is not None else None,
                          pert_ctrl_expr=pe_tr[idx])
-            loss = nn.functional.mse_loss(pred, dev_tr_t[idx])
+            m = mask_tr_t[idx]
+            loss = (((pred - dev_tr_t[idx]) ** 2) * m).sum() / m.sum().clamp(min=1.0)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -318,27 +552,46 @@ def main():
                    train_loss=float(np.mean(run)), secs=round(time.time() - t0, 1))
         model.eval()
         with torch.no_grad():
-            ev = evaluate(model, data, "test", device)
-        # ablation r: corr(real pred_dev, zero-pert pred_dev) over flattened test
+            ev_in = evaluate(model, data, "inner_val", device,
+                             use_mask=args.use_mask)
+            ev = ev_in  # logged per epoch; the test split is NOT scored here
+        # ablation r on the INNER-VAL slice: the test split is reserved for a
+        # single scoring pass after selection.
         with torch.no_grad():
-            rows_t = torch.tensor(data["rows_te"], dtype=torch.long)
-            ds_t = torch.tensor([di for di, _ in data["test_items"]], dtype=torch.long)
+            _sel = np.flatnonzero(data["is_inner_val"])
+            rows_t = torch.tensor(data["rows_tr"][_sel], dtype=torch.long)
+            ds_t = torch.tensor([data["train_items"][i][0] for i in _sel], dtype=torch.long)
             cf_t = torch.from_numpy(data["ctrl_feat_all"][ds_t.numpy()])
-            pe_t = torch.from_numpy(data["pert_expr_te"])
-            rna_t = (data["rna_embs"][len(data["train_items"]):]
+            pe_t = torch.from_numpy(data["pert_expr_tr"][_sel])
+            rna_t = (data["rna_embs"][:len(data["train_items"])][torch.from_numpy(_sel)]
                      if model.proj_r is not None else None)
             ov_all = torch.zeros_like(model.esm_table[rows_t])
 
             def _abl_chunks(chunk=128):
+                """Single-factor ablation: ONLY the target-gene ESM2 vector changes.
+
+                Pre-v4 this passed `rna_emb` to the ablated branch but not to the
+                real one, so it compared "no RNA axis + true ESM2" against
+                "RNA axis + zeroed ESM2" -- two factors at once, and neither
+                branch matched the configuration used by evaluate(). Every
+                ablation_r logged by a run with the RNA axis enabled (including
+                results/p3_v21e/train_log.jsonl) is affected.
+
+                Note the remaining caveat: zeroing the ESM2 vector does not
+                remove perturbation identity, because is_target / is_neighbor
+                still encode it. Use --ablation_mode to isolate those axes.
+                """
                 reals, zeros = [], []
                 for lo in range(0, rows_t.shape[0], chunk):
                     hi = lo + chunk
-                    kw = dict(rna_emb=rna_t[lo:hi] if rna_t is not None else None,
-                              pert_esm_override=ov_all[lo:hi])
+                    rna_chunk = rna_t[lo:hi] if rna_t is not None else None
                     reals.append(model(rows_t[lo:hi], ds_t[lo:hi], cf_t[lo:hi],
+                                       rna_emb=rna_chunk,
                                        pert_ctrl_expr=pe_t[lo:hi]).cpu())
                     zeros.append(model(rows_t[lo:hi], ds_t[lo:hi], cf_t[lo:hi],
-                                       pert_ctrl_expr=pe_t[lo:hi], **kw).cpu())
+                                       rna_emb=rna_chunk,
+                                       pert_esm_override=ov_all[lo:hi],
+                                       pert_ctrl_expr=pe_t[lo:hi]).cpu())
                 return torch.cat(reals).numpy().ravel(), torch.cat(zeros).numpy().ravel()
 
             p_real, p_zero = _abl_chunks()
@@ -348,13 +601,95 @@ def main():
         print(json.dumps(msg), flush=True)
         with open(log_path, "a") as f:
             f.write(json.dumps(msg) + "\n")
-        if ev["pearson_dev"] > best_pd:
-            best_pd = ev["pearson_dev"]
+        if ev_in["pearson_dev"] > best_pd:
+            best_pd, best_epoch = ev_in["pearson_dev"], epoch + 1
             torch.save({"model_state_dict": model.state_dict(), "epoch": epoch + 1,
-                        "metrics": ev, "hvg_rows": data["hvg_rows"],
-                        "common_fc": data["common_fc"]},
-                       os.path.join(args.out_dir, "ckpt_p3_best_dev.pt"))
-            print(f"💾 saved best-dev (pearson_dev={best_pd:.4f})", flush=True)
+                        "selection": "inner_val_pearson_dev",
+                        "selection_value": float(best_pd),
+                        "hvg_rows": data["hvg_rows"],
+                        "common_fc": data["common_fc"],
+                        "split_by": args.split_by},
+                       ckpt_path)
+            print(f"saved best inner-val ckpt (pearson_dev={best_pd:.4f}, "
+                  f"ep{epoch + 1})", flush=True)
+
+    # ---- single, final scoring of the held-out split, at the selected epoch ----
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    load_dev_state(model, ck)
+    model.to(device).eval()
+    final = evaluate(model, data, "test", device, use_mask=args.use_mask)
+    final["selected_epoch"] = best_epoch
+    final["inner_val_pearson_dev_at_selection"] = float(best_pd)
+    final["split_by"] = args.split_by
+
+    # ---- control baselines on the same split, same mask, same metrics ----
+    # Without these there is no evidence that the learned head does more than
+    # retrieval over the frozen ESM2 embeddings it is conditioned on.
+    esm_np = model.esm_table.detach().cpu().numpy()
+    # The graph-only control needs the same is_neighbor indicator the model sees,
+    # otherwise a gain from the model's network channel has nothing to be measured
+    # against and would look like an architectural win rather than extra input.
+    is_nb_tr = is_nb_te = None
+    if getattr(model, "neighbor_table", None) is not None:
+        with torch.no_grad():
+            # indicator_features returns (is_nb, is_tgt) -- neighbour FIRST.
+            # Indexing [1] here would hand the control the TARGET indicator and
+            # silently measure the wrong thing, so the order is asserted below.
+            is_nb_tr, is_tgt_tr = model.indicator_features(
+                torch.as_tensor(data["rows_tr"], dtype=torch.long))
+            is_nb_te, _ = model.indicator_features(
+                torch.as_tensor(data["rows_te"], dtype=torch.long))
+            is_nb_tr = is_nb_tr.cpu().numpy()
+            is_nb_te = is_nb_te.cpu().numpy()
+            # is_tgt marks the perturbed gene itself, so it can fire at most once
+            # per row; is_nb is a neighbourhood and generally fires more. If this
+            # trips, the tuple order flipped.
+            assert is_tgt_tr.cpu().numpy().sum(axis=1).max() <= 1, \
+                "indicator_features order looks flipped: the second element is " \
+                "firing on many genes per item, which is is_nb, not is_tgt"
+        print(f"[baselines] graph-only control enabled: is_neighbor covers "
+              f"{is_nb_te.mean() * 100:.2f}% of held-out (item, gene) cells",
+              flush=True)
+    # Without a graph, neighbor_prior is *identical* to train_mean by construction.
+    # Reporting both would put a duplicate row in the table that reads like an
+    # independent control corroborating the first, so it is requested only when a
+    # graph is actually present.
+    which = ["zero", "train_mean", "knn_esm2", "ridge_esm2"]
+    if is_nb_te is not None:
+        which.append("neighbor_prior")
+    base_preds = run_all(
+        data["dev_tr"], esm_np[data["rows_tr"]], esm_np[data["rows_te"]],
+        mask_tr=(data["mask_tr"] if args.use_mask else None), knn_k=args.knn_k,
+        which=which, is_nb_tr=is_nb_tr, is_nb_te=is_nb_te)
+    mask_te = data["mask_te"] if args.use_mask else np.ones_like(data["mask_te"])
+    dev_te = data["dev_te"]
+    final["baselines"] = {}
+    for name, pred in base_preds.items():
+        final["baselines"][name] = dict(
+            pearson_dev=per_item_correlation(dev_te, pred, mask_te),
+            pearson_dev_pooled=pooled_correlation(dev_te, pred, mask_te),
+            top50_dev=top_k_overlap(dev_te, pred, k=50, mask=mask_te))
+
+    print("\n=== held-out results (scored once, at the selected epoch) ===",
+          flush=True)
+    print(f"{'model':<14} pearson_dev={final['pearson_dev']:.4f}  "
+          f"top50_dev={final['top50_dev']:.4f}", flush=True)
+    for name, m in final["baselines"].items():
+        print(f"{name:<14} pearson_dev={m['pearson_dev']:.4f}  "
+              f"top50_dev={m['top50_dev']:.4f}", flush=True)
+    beaten = [n for n, m in final["baselines"].items()
+              if final["pearson_dev"] <= m["pearson_dev"]]
+    if beaten:
+        print(f"\nNOTE: the trained head does NOT beat {beaten} on pearson_dev. "
+              f"A conditioned model that loses to retrieval or to a linear map "
+              f"over the same embeddings has not been shown to learn "
+              f"perturbation-specific biology.", flush=True)
+
+    ck["metrics"] = final
+    torch.save(ck, ckpt_path)
+    write_json(os.path.join(args.out_dir, "final_report.json"), final, args=args)
+    with open(log_path, "a") as f:
+        f.write(json.dumps({"final": final}) + "\n")
     print("DONE", flush=True)
 
 

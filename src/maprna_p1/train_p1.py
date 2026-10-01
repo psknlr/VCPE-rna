@@ -253,8 +253,13 @@ def main():
     loss_hvg = nn.MSELoss()
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
 
-    # perturb-mean global baseline (HVG space)
-    pert_mean_global = {}
+    # perturb-mean global baseline (HVG space): the mean profile ACROSS training
+    # perturbations, i.e. "predict the average perturbation response".
+    # This previously assigned rather than accumulated, so the dict ended up
+    # holding the LAST training perturbation's profile and the resulting
+    # mse_DE_baseline_perturbmean (0.3258 in results/p1_train_log.jsonl) did not
+    # measure the intended baseline.
+    _sum, _cnt = {}, {}
     for di, cond in train_items:
         Xp = kd["X_pert"][di]
         cp = kd["pert_labels"][di]
@@ -263,7 +268,9 @@ def main():
         for hr in hvg_rows:
             w = np.where(rows == int(hr))[0]
             if len(w):
-                pert_mean_global[int(hr)] = float(m[w[0]])
+                _sum[int(hr)] = _sum.get(int(hr), 0.0) + float(m[w[0]])
+                _cnt[int(hr)] = _cnt.get(int(hr), 0) + 1
+    pert_mean_global = {hr: _sum[hr] / _cnt[hr] for hr in _sum}
 
     # precompute SE embeddings of true perturbed bulks (targets, frozen SE)
     print("precomputing SE target embeddings...", flush=True)

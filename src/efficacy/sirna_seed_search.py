@@ -15,6 +15,7 @@ Returns JSON: {gene: {hits, positions}} sorted by hit count.
 """
 import argparse
 import json
+import os
 
 COMP = str.maketrans("ACGU", "UGCA")
 

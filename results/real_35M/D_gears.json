@@ -1,0 +1,174 @@
+{
+  "n_test_conditions": 27,
+  "train_h5ad": "/home/user/data_real/gears_fmt/tian2021_crispri_cells20.h5ad",
+  "use_mask": true,
+  "protocol": {
+    "data_dirs": [
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+    ],
+    "n_hvg": 500,
+    "hvg_from": "train",
+    "split_by": "target_gene",
+    "test_frac": 0.15,
+    "min_cells": 1,
+    "seed": 0,
+    "use_mask": true,
+    "esm_table": "/home/user/data_real/esm2_35M_human.pt"
+  },
+  "train_h5ad_is_cell_level": true,
+  "train_n_genes": 5000,
+  "train_n_cells": 4117,
+  "n_skipped_not_in_pert_graph": 0,
+  "skipped": [],
+  "vcpe_measured_fraction": 1.0,
+  "gears_per_run": [
+    {
+      "run": 1,
+      "mask_fraction": 1.0,
+      "n_scored": 27,
+      "pearson_dev": -0.046964561338375684,
+      "pearson_dev_pooled": -0.1189314592622103,
+      "top50_dev": 0.11703703703703704,
+      "pearson_dev_ci95": [
+        -0.09355290367334937,
+        -0.006289150688283757
+      ],
+      "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r"
+    },
+    {
+      "run": 2,
+      "mask_fraction": 1.0,
+      "n_scored": 27,
+      "pearson_dev": 0.01668373090778897,
+      "pearson_dev_pooled": -0.003661816851910574,
+      "top50_dev": 0.10296296296296299,
+      "pearson_dev_ci95": [
+        -0.012638531065939875,
+        0.044935412465407824
+      ],
+      "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r"
+    },
+    {
+      "run": 3,
+      "mask_fraction": 1.0,
+      "n_scored": 27,
+      "pearson_dev": 0.015538748317324632,
+      "pearson_dev_pooled": 0.06090316348983087,
+      "top50_dev": 0.09851851851851855,
+      "pearson_dev_ci95": [
+        -0.015533808766577192,
+        0.04474333960052268
+      ],
+      "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r"
+    }
+  ],
+  "gears_across_runs": {
+    "n_runs": 3,
+    "pearson_dev_mean": -0.004914027371087361,
+    "pearson_dev_sd": 0.036421330309087674,
+    "pearson_dev_min": -0.046964561338375684,
+    "pearson_dev_max": 0.01668373090778897,
+    "note": "GEARS is not deterministic at a fixed seed. Measured on this setup, 7 identical invocations spanned -0.023..+0.051 pearson_dev with a sample sd of 0.022 -- larger than the mean itself. Quote the mean and spread across runs, never a single run."
+  },
+  "config": {
+    "split_by": "target_gene",
+    "seed": 0,
+    "epochs": 8,
+    "hidden_size": 64,
+    "device": "cpu",
+    "n_hvg": 500,
+    "runs": 3
+  },
+  "fairness": {
+    "controlled": [
+      "Split: the external model is given VCPE's exact train/val/test condition sets, so both hold out the same perturbations (the same held-out genes under --split_by target_gene).",
+      "Predicted quantity: expression predictions are converted to the same residual VCPE predicts (fold-change against the same control mean, minus the same train-only common core). Scoring raw expression against a residual would flatter the external model, since the shared response dominates raw expression.",
+      "Gene space and mask: VCPE's HVG panel, with VCPE's measured mask intersected with the external model's own gene coverage.",
+      "Estimator: the same per-item and pooled correlation functions, named explicitly so the two are never mixed."
+    ],
+    "not_controlled": [
+      "Tuning effort is not equalised: the external model runs at or near its defaults, while VCPE's hyperparameters were chosen against this data over many runs. That asymmetry favours VCPE and no protocol alignment removes it; the honest fix is an equal tuning budget for both.",
+      "Capacity is not equalised: the external models are generally far larger than the 5.7M-parameter VCPE head. If VCPE wins it wins as the smaller model; if it loses, the size difference is an explanation rather than an excuse.",
+      "Each external model keeps its own preprocessing (its own graph, its own highly-variable-gene or DE selection). Disabling that would not be a comparison against the published method.",
+      "GEARS's perturbation graph is GO-derived, so a target gene can be in the training split and still be unpredictable; the count of held-out genes present in the graph is reported above.",
+      "GEARS is broken on a current scipy/pandas and required a dense-X workaround scoped to its constructor; see the note in _dense_X. A GEARS comparison is not reproducible today without that or an older scipy, and which was used belongs next to this number.",
+      "GEARS does not reproduce its own result at a fixed seed, so its number here is a mean over --runs repetitions with the spread reported.",
+      "Input granularity differs on purpose. GEARS trained on individual cells (tian2021_crispri_cells20.h5ad) while the P3 head trains on the pseudobulk mean of the same cells; the split, the gene panel, the predicted quantity and the metric are identical. GEARS cannot run on pseudobulk at all -- its differential-expression step has no statistics for a group of one -- so the alternative was not a fairer comparison but no comparison."
+    ]
+  },
+  "provenance": {
+    "recorded_at": "2026-09-30T06:55:54+0000",
+    "git": {
+      "revision": "77263873c220b882b21c15775de3ac89da07f586",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": false,
+      "n_modified_files": 0
+    },
+    "command": "baseline_gears.py --out_json /home/user/VCPE-rna/results/real_35M/D_gears.json --data_dirs /home/user/data_real/gears_fmt/tian2021_crispri.h5ad --train_h5ad /home/user/data_real/gears_fmt/tian2021_crispri_cells20.h5ad --n_hvg 500 --min_cells 1 --split_by target_gene --hvg_from train --esm_table /home/user/data_real/esm2_35M_human.pt --seed 0 --runs 3 --epochs 8 --train_max_genes 5000 --max_dense_gb 8",
+    "argv": [
+      "src/maprna_p3/baseline_gears.py",
+      "--out_json",
+      "/home/user/VCPE-rna/results/real_35M/D_gears.json",
+      "--data_dirs",
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad",
+      "--train_h5ad",
+      "/home/user/data_real/gears_fmt/tian2021_crispri_cells20.h5ad",
+      "--n_hvg",
+      "500",
+      "--min_cells",
+      "1",
+      "--split_by",
+      "target_gene",
+      "--hvg_from",
+      "train",
+      "--esm_table",
+      "/home/user/data_real/esm2_35M_human.pt",
+      "--seed",
+      "0",
+      "--runs",
+      "3",
+      "--epochs",
+      "8",
+      "--train_max_genes",
+      "5000",
+      "--max_dense_gb",
+      "8"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "data_dirs": [
+        "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+      ],
+      "esm_table": "/home/user/data_real/esm2_35M_human.pt",
+      "n_hvg": 500,
+      "hvg_from": "train",
+      "test_frac": 0.15,
+      "inner_val_frac": 0.15,
+      "split_by": "target_gene",
+      "seed": 0,
+      "train_max_genes": 5000,
+      "train_h5ad": "/home/user/data_real/gears_fmt/tian2021_crispri_cells20.h5ad",
+      "min_cells": 1,
+      "knn_k": 10,
+      "epochs": 8,
+      "hidden_size": 64,
+      "batch_size": 32,
+      "device": "cpu",
+      "gears_work_dir": "",
+      "max_dense_gb": 8.0,
+      "runs": 3,
+      "out_json": "/home/user/VCPE-rna/results/real_35M/D_gears.json"
+    }
+  }
+}

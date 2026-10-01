@@ -1,19 +1,26 @@
 #!/usr/bin/env python
-"""V2-1c 扩展：GSE183535（HeLa, MYC gapmer ASO）摄入为 ASO 域训练集。
+"""V2-1c extension: ingest GSE183535 (HeLa, MYC gapmer ASO) as an ASO-domain
+training set.
 
-数据：21 样本 TPM 矩阵（RefSeq transcript 级）：Vehicle/NTASO/MYCASO3 × 4h/18h ×3
-+ Untreated ×3。TPM 矩阵已在本地 data/aso_tx_validation/。
+Data: 21-sample TPM matrix (RefSeq transcript level): Vehicle/NTASO/MYCASO3 ×
+4h/18h ×3 + Untreated ×3. The TPM matrix is already local, under
+data/aso_tx_validation/.
 
-口径（selectivity 对照，同 GSE293987 决策）：
-  condition = "MYC"       <- MYCASO3 18h（3 样本；4h 转录组几乎未响应，排除）
-  condition = "ctrl"      <- NTASO 4h+18h（6 样本，转染匹配对照）
-  condition = "ref_excluded" <- Vehicle/Untreated/MYCASO3 4h（不进 ctrl 也不进扰动，
-                              load 后 resolve 失败被安全跳过）
-  X = log1p(TPM)；基因 = RefSeq accession 经 mygene /v3/query 映射到 symbol 后按基因求和。
+Convention (selectivity control, same decision as GSE293987):
+  condition = "MYC"       <- MYCASO3 18h (3 samples; the 4h transcriptome
+                             barely responded, so it is excluded)
+  condition = "ctrl"      <- NTASO 4h+18h (6 samples, transfection-matched
+                             control)
+  condition = "ref_excluded" <- Vehicle/Untreated/MYCASO3 4h (neither ctrl nor
+                              perturbation; after loading, resolve fails and
+                              they are safely skipped)
+  X = log1p(TPM); genes = RefSeq accessions mapped to symbols via mygene
+  /v3/query, then summed per gene.
 
-用法：
-  python ingest_gse183535.py              # 全量（映射有本地缓存断点续传）
-  python ingest_gse183535.py --list-only  # 只列设计表
+Usage:
+  python ingest_gse183535.py              # full run (the mapping has a local
+                                          # cache and resumes)
+  python ingest_gse183535.py --list-only  # only list the design table
 """
 import argparse
 import gzip
@@ -35,7 +42,7 @@ MIN_TPM = 0.5
 
 
 def map_accessions(accs):
-    """RefSeq accession -> symbol，多线程 GET /v3/query（缓存断点续传）。"""
+    """RefSeq accession -> symbol, multi-threaded GET /v3/query (cached, resumable)."""
     m = json.load(open(CACHE_FP)) if os.path.exists(CACHE_FP) else {}
     todo = [a for a in accs if a not in m]
     print(f"[map] cache {len(m)} | todo {len(todo)}", flush=True)
@@ -82,7 +89,7 @@ def main():
     df.columns = [c.strip() for c in df.columns]
     print(f"[data] {df.shape} | accessions head: {list(df.index[:3])}", flush=True)
 
-    # 设计表
+    # design table
     def cls(col):
         if col.startswith("MYCASO3"):
             return "MYC" if "18h" in col else "MYC4h"
@@ -97,12 +104,12 @@ def main():
     if args.list_only:
         return
 
-    # ---- 过滤 + 映射 ----
+    # ---- filter + mapping ----
     keep = df.index[df.max(axis=1) >= MIN_TPM]
     print(f"[filter] max TPM >= {MIN_TPM}: {len(keep)}/{len(df)} transcripts", flush=True)
     acc2sym = map_accessions(list(keep))
 
-    # ---- 聚合到 symbol（TPM 求和）----
+    # ---- aggregate to symbol (sum of TPM) ----
     sym_of_col = {}
     gene_set = set()
     for acc in keep:
@@ -147,17 +154,17 @@ def main():
     adata = ad.AnnData(X=X, obs=obs, var=pd.DataFrame(index=genes))
     out_fp = os.path.join(DATA, "gse183535_proc.h5ad")
     adata.write_h5ad(out_fp)
-    print(f"[done] {out_fp} {adata.shape} | MYC 扰动 {cond.count('MYC')} | "
+    print(f"[done] {out_fp} {adata.shape} | MYC perturbed {cond.count('MYC')} | "
           f"ctrl {ctrl.count(1)} | ref_excluded {cond.count('ref_excluded')}", flush=True)
 
-    # ---- sanity：MYC log2fc（MYCASO18h vs NTASO18h），期望 ≈ -0.91 ----
+    # ---- sanity: MYC log2fc (MYCASO18h vs NTASO18h), expected ≈ -0.91 ----
     gi_myc = gi.get("MYC")
     if gi_myc is not None:
         m18 = X[samples.index("MYCASO3 18h REP 1 - TPM"), gi_myc]
         n18 = X[samples.index("NTASO 18h REP 1 - TPM"), gi_myc]
         fc = np.log2((np.expm1(m18) + 1e-6) / (np.expm1(n18) + 1e-6))
         print(f"[sanity] MYC log1pTPM: MYCASO18h {m18:.3f} vs NTASO18h {n18:.3f} "
-              f"-> log2fc {fc:+.2f}（期望 ≈ -0.91）", flush=True)
+              f"-> log2fc {fc:+.2f} (expected ≈ -0.91)", flush=True)
 
 
 if __name__ == "__main__":

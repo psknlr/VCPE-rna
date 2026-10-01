@@ -2,8 +2,9 @@
 
 CollageBio/oligo-datasets — Roche/CollageBio, NeurIPS 2025 D&B.
 Files: https://huggingface.co/datasets/CollageBio/oligo-datasets/resolve/main/<key>.csv.gz
-Retry logic: direct -> proxy(127.0.0.1:7892) -> 3 attempts each. Resumable (skips existing).
+Retry logic: direct -> optional proxy ($VCPE_HTTPS_PROXY) -> 3 attempts each. Resumable (skips existing).
 """
+import os
 import sys
 import time
 from pathlib import Path
@@ -16,7 +17,11 @@ KEYS = ["ichihara_2007_1", "ichihara_2007_2", "alharbi_2020_1", "alharbi_2020_2"
         "hagedorn_2022_1", "hwang_2024_1", "knott_2014_1", "moe_neurotox_1",
         "martinelli_2023_1", "mcquisten_2007_1", "papargyri_2020_1",
         "shmushkovich_2018_1"]
-PROXIES = {"https": "http://127.0.0.1:7892", "http": "http://127.0.0.1:7892"}
+# Optional egress proxy, opt-in via env. Previously hard-coded to a
+# developer-local address (127.0.0.1:7892), which is unreachable for anyone
+# else and silently burned two of the three retry attempts.
+_PROXY = os.environ.get("VCPE_HTTPS_PROXY", "")
+PROXIES = {"https": _PROXY, "http": _PROXY} if _PROXY else None
 
 
 def fetch(key):
@@ -25,7 +30,8 @@ def fetch(key):
         print(f"skip {key} (exists {dest.stat().st_size/1e6:.1f} MB)", flush=True)
         return True
     url = f"{BASE}/{key}.csv.gz"
-    attempts = [("direct", None)] + [("proxy", PROXIES)] * 2
+    attempts = [("direct", None)] + ([("proxy", PROXIES)] * 2 if PROXIES else
+                                     [("direct", None)] * 2)
     for name, proxies in attempts:
         try:
             r = requests.get(url, timeout=(15, 300), proxies=proxies, stream=True)
