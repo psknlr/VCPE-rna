@@ -665,9 +665,10 @@ so every held-out number remains a single-shot estimate for the checkpoint that
 was chosen, and the head and the controls were fit on the same items, so the
 comparisons between them in Table 1 and Fig. 2 stand. What the defect removes is
 the *meaning* of the selected epoch. In particular the statement in
-RESULTS_REAL.md and in the Fig. 4b annotation -- that selection "never leaves the
-budget, so the head has not converged" -- inferred convergence from a criterion
-that tracks training fit and would have said the same at any budget. The
+RESULTS_REAL.md, in the Fig. 4b annotation and in the IEEE Extended Data Fig. 4
+caption (`make_ieee.py`) -- that selection "never leaves the budget, so the head
+has not converged" -- inferred convergence from a criterion that tracks training
+fit and would have said the same at any budget. All three are corrected. The
 held-out values on split 0 (0.294, 0.336, 0.350 at 30, 80 and 150 epochs) do
 still rise, so the conclusion that the head is still improving at 80 epochs is
 supported -- by those values, on one split, and not by the selection rule.
