@@ -58,7 +58,7 @@ def main(outdir="figures"):
     box(axa, 0.183, y0, 0.148, bh,
         "Per-cell\nnormalisation,\nthen pseudobulk", fc="white")
     box(axa, 0.361, y0, 0.158, bh,
-        "Hold out whole\ntarget genes\n349 of 2,328", fc="white", ec=ns.C_ACCENT,
+        "Hold out whole\ntarget genes\n340 of 2,269", fc="white", ec=ns.C_ACCENT,
         lw=1.0)
     box(axa, 0.549, y0, 0.158, bh,
         "Predict residual:\nfold change minus\ntrain-only core", fc="white")

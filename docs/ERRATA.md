@@ -759,6 +759,26 @@ stored mean, so the committed summaries' old intervals cannot reach a figure.
 files keep the old intervals as written; RESULTS_REAL.md and README now cite the
 recomputed ones.
 
+## E20 — The held-out gene count was misreported
+
+**Defect.** RESULTS_REAL.md, this file, Table 1's footnote, three figure legends,
+the IEEE captions and a box inside Fig. 1 all said the combined task has "2,328
+distinct target genes, 349 held out". Neither number is a gene count. Re-running
+the repository's own `split_items` on the committed data gives 2,329 perturbation
+items covering **2,269 distinct target genes** (60 genes are targeted in both
+screens) and **340 held-out target genes in every split** (round(0.15 × 2,269)).
+349 is the held-out *perturbation* count of split 2 alone; the three splits score
+352 / 347 / 349 held-out perturbations, which is what `n_scored_perturbations`
+records and what the remaining legends already said.
+
+**What changes.** Only the stated n. No score, interval or P value used either
+number, and the per-split perturbation counts were always correct.
+
+**Fix.** `fig1_design.py`, the legend and footnote text in `make_all.py` and
+`make_ieee.py`, RESULTS_REAL.md and the real-data summary further down this file
+now give 2,269 genes and 340 held out per split; the figures and legends were
+regenerated.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically
@@ -819,7 +839,8 @@ what most constrains any claim the project can make:
    whole pipeline: **ReplogleWeissman2022 RPE1** (2204 perturbations surviving a
    20-cell gate, 3000 control cells, 8749 genes) and **TianKampmann2021 CRISPRi**
    (184 perturbations, iPSC-derived neurons, 33538 genes). Together they give
-   2328 distinct target genes and a grouped split that holds out 349 of them.
+   2269 distinct target genes (2329 perturbations) and a grouped split that
+   holds out 340 of them in each split (352 / 347 / 349 held-out perturbations).
 
    The one caveat that must travel with every real number: the ESM2 variant.
    650M — what the withdrawn results used — needs roughly a day for the human

@@ -205,5 +205,5 @@
   ],
   "font_note": "Arial/Helvetica are not installed in this container. Liberation Sans is metrically identical to Arial, so the layout is unchanged when a production system substitutes real Arial. Text is embedded as Type 42 and remains selectable and editable in the PDFs.",
   "data_note": "Every value is read from results/**/*.json by tools/figures/figdata.py. No measurement is typed into the plotting code.",
-  "git": "8a52a03"
+  "git": "35a1986"
 }

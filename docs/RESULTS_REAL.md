@@ -23,7 +23,9 @@ Two real CRISPRi screens, the kind of knockdown this model claims to predict:
 | TianKampmann2021 CRISPRi (iPSC neurons) | 184 | 437 | 33538 |
 
 - **Split:** `target_gene`, so a held-out perturbation's gene is genuinely
-  unseen. 2328 distinct target genes, 349 held out.
+  unseen. 2269 distinct target genes (2329 perturbations; 60 genes are
+  targeted in both screens); 340 held out in each split, i.e. 352 / 347 / 349
+  held-out perturbations on splits 0 / 1 / 2.
 - **Panel:** ranked on training perturbations only (ERRATA E15).
 - **Estimator:** mean over perturbations of the within-perturbation correlation
   (never the pooled one; ERRATA E4).

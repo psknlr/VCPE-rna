@@ -81,5 +81,5 @@
   ],
   "font_note": "Times New Roman is not installed in this container. Liberation Serif is metrically identical to it; math is set in STIX, a Times-design face. Fonts are embedded as TrueType (Type 42) and text remains editable.",
   "data_note": "Every value is read from committed results/**/*.json; architecture dimensions mirror src/maprna_p3/model_dev.py.",
-  "git": "6fc78a6"
+  "git": "35a1986"
 }
