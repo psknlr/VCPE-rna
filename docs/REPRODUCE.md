@@ -457,6 +457,12 @@ python3 tools/figures/make_all.py          # all display items, legends, manifes
 | `figures/ieee/fig_architecture.{pdf,eps}`, `caption_ieee.tex` | IEEE Transactions | network architecture, Times-metric 9 pt |
 | `figures/ieee/fig_architecture_nature.pdf`, `legend_nature.md` | Nature portfolio | the same architecture re-typeset, Arial-metric 7 pt |
 
+The figures read the per-seed `final_report.json` and `train_log.jsonl` of every
+completed run as well as the seed summaries, so those are committed with
+`git add -f` despite the `results/real_*/` ignore rule (which exists for live,
+half-finished runs); `tests/test_figure_inputs_tracked.py` fails, naming the
+file, if a figure ever reads something that is not in the repository.
+
 `make_all.py` exits non-zero if any item is off-spec. The Nature audit checks the
 saved PDF itself -- every font is the figure face (STIX allowed only for math
 glyphs Arial lacks), nothing is set below 5 pt (sub- and superscripts included),

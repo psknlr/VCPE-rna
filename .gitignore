@@ -18,7 +18,10 @@ data/drive_weights/*
 # half-finished numbers into history. The FINAL reviewed comparison tables are
 # committed deliberately once a run completes -- see docs/REPRODUCE.md -- via an
 # explicit `git add -f results/real_*/table_*.{json,md}` and the seed summary,
-# not by tracking the whole working directory.
+# not by tracking the whole working directory. The per-seed final_report.json and
+# train_log.jsonl of completed runs are force-added too, because the figures read
+# them (tests/test_figure_inputs_tracked.py checks that nothing they read is
+# missing).
 results/real_*/
 
 # large artifacts (release via GitHub Releases / HuggingFace)

@@ -1,0 +1,106 @@
+{
+  "measured_fraction": 0.9986363636363637,
+  "mse_DE": 0.0434380159396851,
+  "mse_DE_baseline_ctrl": 0.07230973252404571,
+  "pearson_delta": 0.5058211397381538,
+  "top50_deg_overlap": 0.36522727272727273,
+  "mse_dev": 0.04343801590919163,
+  "pearson_dev": 0.2878284458300166,
+  "top50_dev": 0.32136363636363635,
+  "n_scored_perturbations": 352,
+  "pearson_dev_estimator": "mean_over_perturbations_of_within_perturbation_r",
+  "selected_epoch": 30,
+  "inner_val_pearson_dev_at_selection": 0.43901955151678873,
+  "split_by": "target_gene",
+  "baselines": {
+    "zero": {
+      "pearson_dev": 0.0,
+      "pearson_dev_pooled": NaN,
+      "top50_dev": 0.3871022727272727
+    },
+    "train_mean": {
+      "pearson_dev": 0.011950129768833351,
+      "pearson_dev_pooled": -0.0006663309413240474,
+      "top50_dev": 0.2165909090909091
+    },
+    "knn_esm2": {
+      "pearson_dev": 0.18774057590794666,
+      "pearson_dev_pooled": 0.2928470998559052,
+      "top50_dev": 0.28340909090909094
+    },
+    "ridge_esm2": {
+      "pearson_dev": 0.2427994714626939,
+      "pearson_dev_pooled": 0.32533729836911957,
+      "top50_dev": 0.3013068181818182
+    }
+  },
+  "provenance": {
+    "recorded_at": "2026-09-30T12:50:05+0000",
+    "git": {
+      "revision": "a2618fda654df3f8173f83f7a6565c46e6ff2c8d",
+      "branch": "claude/cool-tesla-0oq2xa",
+      "dirty": false,
+      "n_modified_files": 0
+    },
+    "command": "train_p3.py --seed 0 --out_dir /home/user/VCPE-rna/results/real_150M/A_seeds/seed0 --data_dirs /home/user/data_real/gears_fmt/replogle_rpe1.h5ad /home/user/data_real/gears_fmt/tian2021_crispri.h5ad --esm_table /home/user/data_real/esm2_150M_human.pt --n_hvg 500 --min_cells 1 --split_by target_gene --hvg_from train --epochs 30",
+    "argv": [
+      "/home/user/VCPE-rna/src/maprna_p3/train_p3.py",
+      "--seed",
+      "0",
+      "--out_dir",
+      "/home/user/VCPE-rna/results/real_150M/A_seeds/seed0",
+      "--data_dirs",
+      "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+      "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad",
+      "--esm_table",
+      "/home/user/data_real/esm2_150M_human.pt",
+      "--n_hvg",
+      "500",
+      "--min_cells",
+      "1",
+      "--split_by",
+      "target_gene",
+      "--hvg_from",
+      "train",
+      "--epochs",
+      "30"
+    ],
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3",
+      "sklearn": "1.9.1",
+      "xgboost": "3.2.0",
+      "anndata": "0.12.19",
+      "h5py": "3.16.0"
+    },
+    "args": {
+      "data_dirs": [
+        "/home/user/data_real/gears_fmt/replogle_rpe1.h5ad",
+        "/home/user/data_real/gears_fmt/tian2021_crispri.h5ad"
+      ],
+      "esm_table": "/home/user/data_real/esm2_150M_human.pt",
+      "string_neighbors": "",
+      "rna_encoder_ckpt": "",
+      "fasta": "",
+      "out_dir": "/home/user/VCPE-rna/results/real_150M/A_seeds/seed0",
+      "n_hvg": 500,
+      "batch_size": 16,
+      "epochs": 30,
+      "lr": 0.001,
+      "weight_decay": 0.01,
+      "test_frac": 0.15,
+      "split_by": "target_gene",
+      "min_cells": 1,
+      "seed": 0,
+      "inner_val_frac": 0.15,
+      "use_mask": true,
+      "knn_k": 10,
+      "hvg_from": "train",
+      "d_model": 256
+    }
+  }
+}
