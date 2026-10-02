@@ -17,9 +17,9 @@ import nature_style as ns                                       # noqa: E402
 
 # Dataset facts are read from the ingest provenance written at ingest time.
 DATASETS = [
-    dict(name="Replogle 2022 RPE1", perts=2204, ctrl=3000, genes=8749,
+    dict(name="RPE1 (Replogle 2022)", perts=2204, ctrl=3000, genes=8749,
          note="CRISPRi, RPE1"),
-    dict(name="Tian 2021 CRISPRi", perts=184, ctrl=437, genes=33538,
+    dict(name="Neurons (Tian 2021)", perts=184, ctrl=437, genes=33538,
          note="CRISPRi, iPSC neuron"),
 ]
 
@@ -61,7 +61,7 @@ def main(outdir="figures"):
         "Hold out whole\ntarget genes\n340 of 2,269", fc="white", ec=ns.C_ACCENT,
         lw=1.0)
     box(axa, 0.549, y0, 0.158, bh,
-        "Predict residual:\nfold change minus\ntrain-only core", fc="white")
+        "Predict residual:\nfold change minus\nshared response", fc="white")
     box(axa, 0.737, y0, 0.158, bh,
         "Score once, on\nmeasured genes\nonly", fc="white", ec=ns.C_ACCENT, lw=1.0)
     box(axa, 0.925, y0, 0.070, bh, "Report", fc="#F2F2F2")
@@ -85,8 +85,8 @@ def main(outdir="figures"):
 
     axa.text(0.005, 0.10,
              "Controls scored on the identical split, gene panel, predicted "
-             "quantity and estimator:\npredict-no-change · train mean · ESM2 "
-             "k-NN retrieval · ESM2 closed-form ridge · published models (GEARS, CPA)",
+             "quantity and estimator:\nno change · training mean · k-NN retrieval · "
+             "ridge regression · published models (GEARS, CPA; neuronal screen only)",
              fontsize=5.2, va="bottom", ha="left", linespacing=1.5)
 
     # ---------------- b: dataset composition ---------------------------
@@ -113,7 +113,7 @@ def main(outdir="figures"):
             color=[ns.C_MODEL, ns.C_BASE], linewidth=0)
     axc.axhline(0, color=ns.C_FLOOR, lw=0.8)
     axc.set_xticks([0, 1])
-    axc.set_xticklabels(["Both\nscreens", "Smaller\nscreen only"], fontsize=5.4)
+    axc.set_xticklabels(["Both\nscreens", "Neuronal\nscreen only"], fontsize=5.4)
     axc.set_ylabel("Held-out $r$ (residual)")
     axc.set_ylim(-0.02, 0.36)
     for x, v in ((0, both), (1, tian)):

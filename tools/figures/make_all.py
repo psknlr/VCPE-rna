@@ -99,11 +99,11 @@ def table1_markdown(d):
         "",
         "| Method | ESM2 only (640-d) | + STRING neighbourhood (1,280-d) | Δ |",
         "|---|---|---|---|",
-        row("P3 head", "P3 head (conditioned)"),
-        row("ridge_esm2", "ESM2 ridge (closed form)"),
-        row("knn_esm2", "ESM2 k-NN retrieval"),
-        row("train_mean", "Train mean"),
-        row("zero", "Predict no change"),
+        row("P3 head", "Conditioned head"),
+        row("ridge_esm2", "Ridge regression (closed form)"),
+        row("knn_esm2", "k-NN retrieval"),
+        row("train_mean", "Training mean"),
+        row("zero", "No change"),
         "",
         "Values are the mean Pearson *r* between predicted and observed residual "
         "response over held-out target genes, averaged across three splits; ± is "
@@ -111,7 +111,11 @@ def table1_markdown(d):
         "and then averaged, never pooled across perturbations. Both columns use "
         "the identical split, gene panel, measured-gene mask and estimator; only "
         "the gene representation differs, and it is shared by every method in the "
-        "column. n = 340 held-out target genes of 2,269 in each split (347-352 held-out perturbations); 3 splits.",
+        "column. For the head, Δ compares 80 epochs on the enriched table with "
+        "30 epochs on ESM2 only; at the same 30-epoch budget it is +0.0364. The "
+        "training mean predicts zero up to rounding in these runs, so it is a "
+        "floor. n = 340 held-out target genes of 2,269 in each split (347-352 "
+        "held-out perturbations); 3 splits.",
     ]
     return "\n".join(lines)
 
@@ -119,17 +123,17 @@ def table1_markdown(d):
 LEGENDS = """Fig. 1 | Study design and the three protocol choices that decide what the score means.
 a, Scientific workflow from the two CRISPRi Perturb-seq screens to the reported number. Orange boxes mark the three choices that change the quantity being estimated: perturbations are held out by target gene so a held-out gene is unseen, the training epoch is chosen on an inner split so the held-out set is scored exactly once, and genes a screen never measured are masked because they carry a per-dataset constant rather than signal. In the runs reported here the inner split was also trained on (ERRATA E17), so it selected by training fit; the held-out set was still scored once. b, Perturbations retained after a 20-cell gate. c, The same model evaluated on both screens and on the smaller screen alone. d, The same predictions scored against raw fold change and against the residual remaining after the response shared across perturbations is removed. n = 340 held-out target genes of 2,269 in each split; 3 splits.
 
-Fig. 2 | Network-augmented gene embeddings improve every method that reads them; on neither representation is the head significantly better than a linear fit.
-a, Held-out Pearson r for the conditioned head and four controls under ESM2 embeddings alone and after each gene's STRING interaction neighbourhood is concatenated to its embedding. Bars are the mean of three splits; error bars are the sample s.d. across splits. b, Head minus ridge, paired within split; points are the mean paired difference, lines the 95% confidence interval from the t distribution with 2 degrees of freedom, ticks the individual splits; P values are from two-sided paired t-tests across the three splits. c, Change in held-out r attributable to the richer representation. Train mean does not read the embedding and is unchanged to four decimals, which is the internal check that the gain is representational. n = 347-352 held-out perturbations per split; 3 splits.
+Fig. 2 | Network-augmented gene embeddings raised ridge regression and k-NN, and the head non-significantly; on neither representation is the head significantly better than a linear fit.
+a, Held-out Pearson r for the conditioned head and four controls under ESM2 embeddings alone and after each gene's STRING interaction neighbourhood is concatenated to its embedding (the head at 80 epochs on the enriched table). Bars are the mean of three splits; error bars are the sample s.d. across splits. b, Head minus ridge, paired within split; points are the mean paired difference, lines the 95% confidence interval from the t distribution with 2 degrees of freedom, ticks the individual splits; P values are from two-sided paired t-tests across the three splits. c, Change in held-out r from the richer representation, every method at the same 30-epoch budget. The training mean predicts zero up to rounding in these runs, so its unchanged value only confirms that split, panel and target are identical. n = 347-352 held-out perturbations per split; 3 splits.
 
 Fig. 3 | The score rests on target-gene identity carried by a single channel.
-a, Held-out r after disabling one conditioning channel at a time; the dashed line is the intact model. Grey channels leave the prediction bit-identical. b, Conditioning attributed to the model under two null floors: setting the target vector to zero takes the input off its distribution and flatters the floor, whereas permuting target vectors across perturbations preserves the input statistics and destroys only identity. The permuted floor is the defensible one. c, Gain over ESM2-only features from the same STRING graph injected as a sparse binary partner indicator over the output panel versus as a dense neighbourhood embedding. Single split (split 0) for a and b; 3 splits for c.
+a, Held-out r after disabling one conditioning channel at a time; the dashed line is the intact model. Grey channels change r by less than 0.00001. b, Conditioning attributed to the model under two null floors: setting the target embedding to zero takes the input off its distribution and flatters the floor, whereas permuting target embeddings across perturbations preserves the input statistics and destroys only identity. The permuted floor is the defensible one. c, Gain over ESM2-only features from the same STRING graph injected as a sparse binary partner indicator over the output panel versus as a dense neighbourhood embedding, the head at 30 epochs in all three runs. Single split (split 0) for a and b; 3 splits for c.
 
 Fig. 4 | The head-versus-ridge comparison depends on the split, the budget and the representation.
-a, Held-out r per split at a fixed 80-epoch budget on the network-augmented features. b, Effect of training budget on split 0 only; held-out r is still rising at 150 epochs. The epoch selected on the inner split is not shown: in these runs that split was also trained on (ERRATA E17), so selection tracks training fit and carries no information about convergence. c, Head minus ridge paired within split under three gene representations; points are mean paired differences, lines 95% confidence intervals from the t distribution with 2 degrees of freedom; no interval excludes zero. n = 340 held-out target genes per split; 3 splits except b, which is a single split and is labelled as such.
+a, Held-out r per split at a fixed 80-epoch budget on the network-augmented features. b, Effect of training budget on split 0 only, one run per budget; held-out r was higher at each larger budget on this split. The epoch selected on the inner split is not shown: in these runs that split was also trained on (ERRATA E17), so selection tracks training fit and carries no information about convergence. c, Head minus ridge paired within split under three gene representations; points are mean paired differences, lines 95% confidence intervals from the t distribution with 2 degrees of freedom; no interval excludes zero. n = 340 held-out target genes per split; 3 splits except b, which is a single split and is labelled as such.
 
 Fig. 5 | Three protocol choices each move the headline number, measured as A/B comparisons on real data.
-a, The same predictions scored against raw fold change and against the residual. b, The same configuration scored with and without masking genes a screen never measured, on a logarithmic axis; the head is unchanged while the train-mean baseline, which carries no perturbation information and must sit at the floor, gains. Only 0.14% of this gene panel is unmeasured, so the effect is a lower bound. c, Eight gene-representation designs ranked by ridge on an inner-validation split; no held-out value was computed during the search, and the dashed line marks the held-out ridge score for reference only. n = 340 held-out target genes per split; 3 splits in c, single split in a and b.
+a, The same predictions scored against raw fold change and against the residual. b, The same configuration scored with and without masking genes a screen never measured, on a logarithmic axis; the head is unchanged while the training mean, which carries no perturbation information, gains. Only 0.14% of held-out entries are unmeasured. c, Eight gene-representation designs ranked by ridge on an inner-validation split; no held-out value was computed during the search, and the dashed line marks the held-out ridge score for reference only. The design in use was built before this search, after earlier held-out results were known, so the search checked it rather than selected it. n = 340 held-out target genes per split; 3 splits in c, single split in a and b.
 """
 
 

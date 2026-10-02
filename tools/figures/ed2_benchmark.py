@@ -15,10 +15,10 @@ import figdata as F                                             # noqa: E402
 import nature_style as ns                                       # noqa: E402
 
 METHODS = [  # key in the report, label, colour, marker
-    ("model", "P3 head", ns.C_MODEL, "o"),
-    ("ridge_esm2", "ESM2 ridge", ns.C_ALT, "s"),
-    ("knn_esm2", "ESM2 k-NN", ns.OKABE_ITO["purple"], "^"),
-    ("train_mean", "Train mean", ns.C_BASE, "D"),
+    ("model", "Conditioned head", ns.C_MODEL, "o"),
+    ("ridge_esm2", "Ridge regression", ns.C_ALT, "s"),
+    ("knn_esm2", "k-NN", ns.OKABE_ITO["purple"], "^"),
+    ("train_mean", "Training mean", ns.C_BASE, "D"),
 ]
 
 
@@ -41,6 +41,9 @@ def forest(ax, d, control, title):
     ax.set_yticklabels([c[1] for c in cfgs], fontsize=5.6)
     ax.set_ylim(-0.7, len(cfgs) - 0.4)
     ax.set_xlabel(f"Head − {title}, paired by split (Δ held-out $r$)")
+    # at most five ticks: the k-NN panel spans 0.2 and its labels otherwise touch
+    from matplotlib.ticker import MaxNLocator
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10]))
 
 
 def main(outdir="figures/extended_data"):

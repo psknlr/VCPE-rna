@@ -28,8 +28,8 @@ def main(outdir="figures"):
     head = [reps[s]["pearson_dev"] for s in seeds]
     ridge = [reps[s]["baselines"]["ridge_esm2"]["pearson_dev"] for s in seeds]
     x = np.arange(len(seeds)); wdt = 0.34
-    axa.bar(x - wdt / 2, head, wdt, color=ns.C_MODEL, linewidth=0, label="P3 head")
-    axa.bar(x + wdt / 2, ridge, wdt, color=ns.C_BASE, linewidth=0, label="ESM2 ridge")
+    axa.bar(x - wdt / 2, head, wdt, color=ns.C_MODEL, linewidth=0, label="Conditioned head")
+    axa.bar(x + wdt / 2, ridge, wdt, color=ns.C_ALT, linewidth=0, label="Ridge regression")
     axa.set_xticks(x); axa.set_xticklabels([f"Split {s}" for s in seeds], fontsize=5.6)
     axa.set_ylabel("Held-out $r$ (residual)")
     axa.set_ylim(0, max(head + ridge) * 1.22)
@@ -39,9 +39,6 @@ def main(outdir="figures"):
         win = h > r
         axa.text(xi, max(h, r) * 1.035, "head" if win else "ridge", ha="center",
                  fontsize=5.0, color=ns.C_TEXT)
-    axa.text(0.5, max(head + ridge) * 0.12,
-             "the head leads on 1 of 3 splits;\nsplit 0 is ridge's weakest",
-             fontsize=5.0, ha="center", color=ns.C_TEXT)
 
     # ---------------- b: budget dependence (single split, labelled) ----
     axb = fig.add_subplot(gs[0, 1]); ns.tidy(axb); ns.panel_label(axb, "b")
@@ -49,8 +46,8 @@ def main(outdir="figures"):
     eps = sorted(bud)
     hv = [bud[e]["pearson_dev"] for e in eps]
     rv = bud[eps[0]]["baselines"]["ridge_esm2"]["pearson_dev"]
-    axb.plot(eps, hv, "-o", ms=3.0, lw=1.0, color=ns.C_MODEL, label="P3 head")
-    axb.axhline(rv, color=ns.C_BASE, lw=1.0, ls=(0, (3, 2)), label="ESM2 ridge")
+    axb.plot(eps, hv, "-o", ms=3.0, lw=1.0, color=ns.C_MODEL, label="Conditioned head")
+    axb.axhline(rv, color=ns.C_ALT, lw=1.0, ls=(0, (3, 2)), label="Ridge regression")
     axb.set_xlabel("Training budget (epochs)")
     axb.set_ylabel("Held-out $r$, split 0 only")
     axb.set_xticks(eps)
@@ -62,14 +59,14 @@ def main(outdir="figures"):
         axb.annotate(f"{v:+.3f}", (e, v), textcoords="offset points",
                      xytext=off, ha="center", fontsize=5.0, color=ns.C_TEXT)
     axb.text(np.mean(eps), min(hv + [rv]) * 0.962,
-             "held-out $r$ still rising at 150 epochs",
+             "split 0 only; one run per budget",
              fontsize=5.0, ha="center", color=ns.C_TEXT)
     axb.set_ylim(min(hv + [rv]) * 0.925, max(hv) * 1.045)
 
     # ---------------- c: embedding dependence --------------------------
     axc = fig.add_subplot(gs[0, 2]); ns.tidy(axc); ns.panel_label(axc, "c")
     runs = [("ESM2-35M", d["plain_35M"]), ("ESM2-150M", d["plain_150M"]),
-            ("150M + STRING", d["graph_80ep"])]
+            ("+ STRING\nneighbourhood,\n80 epochs", d["graph_80ep"])]
     yy = np.arange(len(runs))[::-1]
     for y, (lab, summ) in zip(yy, runs):
         p = F.paired(summ, "ridge_esm2")

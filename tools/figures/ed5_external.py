@@ -19,22 +19,24 @@ import nature_style as ns                                       # noqa: E402
 def rows_of(d):
     """[(label, [values per run], [ci per run or None], pooled, top50, colour)]."""
     h = d["d_head"]
-    out = [("P3 head (ESM2-35M)", [h["pearson_dev"]], [None], [None],
+    out = [("Conditioned head (ESM2-35M)", [h["pearson_dev"]], [None], [None],
             [h["top50_dev"]], ns.C_MODEL)]
-    for key, lab in (("ridge_esm2", "ESM2 ridge"), ("knn_esm2", "ESM2 k-NN"),
-                     ("train_mean", "Train mean"), ("zero", "Predict no change")):
+    for key, lab in (("ridge_esm2", "Ridge regression"), ("knn_esm2", "k-NN"),
+                     ("train_mean", "Training mean"), ("zero", "No change")):
         b = h["baselines"][key]
         out.append((lab, [b["pearson_dev"]], [None], [b["pearson_dev_pooled"]],
-                    [b["top50_dev"]], ns.C_BASE))
+                    [b["top50_dev"]], ns.METHOD_COLOUR[key]))
     g = d["gears"]["gears_per_run"]
     out.append((f"GEARS ({len(g)} runs)", [r["pearson_dev"] for r in g],
                 [r["pearson_dev_ci95"] for r in g],
                 [r["pearson_dev_pooled"] for r in g],
-                [r["top50_dev"] for r in g], ns.C_ALT))
+                [r["top50_dev"] for r in g], ns.METHOD_COLOUR["gears"]))
     c = d["cpa"]["cpa"]
-    out.append(("CPA", [c["pearson_dev"]], [c["pearson_dev_ci95"]],
+    # CPA's held-out values reconstruct the held-out cells it was given
+    # (Methods), so they are labelled as such rather than ranked with the rest.
+    out.append(("CPA (reconstruction)", [c["pearson_dev"]], [c["pearson_dev_ci95"]],
                 [c["pearson_dev_pooled"]], [c["top50_dev"]],
-                ns.OKABE_ITO["purple"]))
+                ns.METHOD_COLOUR["cpa"]))
     return out
 
 
@@ -96,9 +98,9 @@ def main(outdir="figures/extended_data"):
     ax3.axvline(chance, color=ns.C_FLOOR, lw=0.8, ls=(0, (1, 1.4)))
     ax3.text(chance + 0.003, yy[0] + 0.55, f"chance, $k/n$ = {chance:.2f}",
              fontsize=5.2, va="center")
-    z = rows[[r[0] for r in rows].index("Predict no change")][4][0]
-    ax3.text(z, yy[[r[0] for r in rows].index("Predict no change")] - 0.42,
-             "tie artefact (E16)", fontsize=5.0, ha="right", va="center")
+    z = rows[[r[0] for r in rows].index("No change")][4][0]
+    ax3.text(z, yy[[r[0] for r in rows].index("No change")] - 0.42,
+             "tie artefact", fontsize=5.0, ha="right", va="center")
     ax3.set_xlabel("Top-50 overlap (as recorded)")
     ax3.tick_params(labelleft=False)
     ax3.set_xlim(0.06, 0.17)

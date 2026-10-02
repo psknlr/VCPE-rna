@@ -49,6 +49,11 @@ C_ACCENT = OKABE_ITO["vermillion"]
 C_ALT = OKABE_ITO["orange"]
 C_FLOOR = OKABE_ITO["black"]
 C_TEXT = OKABE_ITO["black"]     # all text is black: the guide forbids coloured text
+# One colour per method in every figure where colour encodes the method.
+METHOD_COLOUR = {"P3 head": C_MODEL, "model": C_MODEL, "ridge_esm2": C_ALT,
+                 "knn_esm2": OKABE_ITO["purple"], "train_mean": C_BASE,
+                 "zero": C_FLOOR, "gears": OKABE_ITO["green"],
+                 "cpa": OKABE_ITO["vermillion"]}
 
 FONT_STACK = ["Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"]
 

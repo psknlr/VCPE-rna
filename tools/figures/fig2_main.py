@@ -15,6 +15,7 @@ import figdata as F                                             # noqa: E402
 import nature_style as ns                                       # noqa: E402
 
 ORDER = ["P3 head", "ridge_esm2", "knn_esm2", "train_mean", "zero"]
+METHOD_COLOUR = ns.METHOD_COLOUR
 
 
 def main(outdir="figures"):
@@ -38,17 +39,18 @@ def main(outdir="figures"):
     pv = [val(plain, k) for k in ORDER]
     gv = [val(graph, k) for k in ORDER]
     axa.bar(x - wdt / 2, [v[0] for v in pv], wdt, yerr=[v[1] or 0 for v in pv],
-            color=ns.C_BASE, linewidth=0, label="ESM2 only (640-d)",
+            color=ns.C_BASE, linewidth=0, label="ESM2-150M (640-d)",
             error_kw=dict(lw=0.8, capsize=1.3, ecolor=ns.C_FLOOR))
     axa.bar(x + wdt / 2, [v[0] for v in gv], wdt, yerr=[v[1] or 0 for v in gv],
-            color=ns.C_MODEL, linewidth=0, label="+ STRING neighbourhood (1,280-d)",
+            color=ns.C_MODEL, linewidth=0,
+            label="+ STRING neighbourhood (1,280-d; head 80 ep)",
             error_kw=dict(lw=0.8, capsize=1.3, ecolor=ns.C_FLOOR))
     axa.axhline(0, color=ns.C_FLOOR, lw=0.8)
     axa.set_xticks(x)
     axa.set_xticklabels([F.pretty(k).replace(" ", "\n", 1) for k in ORDER],
                         fontsize=5.4)
     axa.set_ylabel("Held-out $r$ (residual), mean of 3 splits")
-    axa.set_ylim(-0.015, 0.425)
+    axa.set_ylim(-0.015, 0.475)
     axa.legend(loc="upper right", fontsize=5.2, handlelength=1.1,
                borderpad=0.25, labelspacing=0.3)
     # the two best values, labelled, since they are the paper's headline numbers
@@ -59,8 +61,8 @@ def main(outdir="figures"):
 
     # ---------------- b: paired difference, head minus ridge -----------
     axb = fig.add_subplot(gs[0, 1]); ns.tidy(axb); ns.panel_label(axb, "b")
-    rows = [("ESM2 only", F.paired(plain, "ridge_esm2")),
-            ("+ STRING", F.paired(graph, "ridge_esm2"))]
+    rows = [("ESM2-150M", F.paired(plain, "ridge_esm2")),
+            ("+ STRING\nneighbourhood", F.paired(graph, "ridge_esm2"))]
     yy = np.arange(len(rows))[::-1]
     for y, (lab, p) in zip(yy, rows):
         col = ns.C_MODEL if p["lo"] > 0 else ns.C_BASE
@@ -79,28 +81,29 @@ def main(outdir="figures"):
     # what the data say, not a verdict typed in: splits won and the paired-t P
     for y, (lab, p) in zip(yy, rows):
         axb.text(p["hi"] + 0.004, y, f"{p['wins']}/{p['n']} splits\n"
-                 f"$P$ = {p['p']:.2f}", fontsize=5.0, va="center",
+                 f"$P$ = {p['p']:.2g}", fontsize=5.0, va="center",
                  color=ns.C_TEXT)
 
     # ---------------- c: what each method gained ------------------------
     axc = fig.add_subplot(gs[0, 2]); ns.tidy(axc); ns.panel_label(axc, "c")
+    # matched budget: the head's 80-epoch value would compare two budgets
+    graph30 = d["graph_30ep"]
     keys = ["ridge_esm2", "knn_esm2", "P3 head", "train_mean"]
-    gains = [val(graph, k)[0] - val(plain, k)[0] for k in keys]
-    cols = [ns.C_ACCENT if k == "ridge_esm2" else
-            (ns.C_MODEL if k == "P3 head" else ns.C_BASE) for k in keys]
+    gains = [val(graph30, k)[0] - val(plain, k)[0] for k in keys]
+    cols = [METHOD_COLOUR[k] for k in keys]
     yy = np.arange(len(keys))[::-1]
     axc.barh(yy, gains, height=0.52, color=cols, linewidth=0)
     axc.axvline(0, color=ns.C_FLOOR, lw=0.8)
     axc.set_yticks(yy)
     axc.set_yticklabels([F.pretty(k) for k in keys], fontsize=5.4)
-    axc.set_xlabel("Gain from the graph features\n(Δ held-out $r$)")
+    axc.set_xlabel("Gain from the STRING\nneighbourhood (Δ held-out $r$;\nall methods at 30 epochs)")
     axc.set_xlim(-0.012, max(gains) * 1.34)
     for y, g in zip(yy, gains):
         axc.text(g + max(gains) * 0.035, y, f"{g:+.3f}", va="center", fontsize=5.4)
     axc.set_ylim(-0.62, len(keys) - 0.4)
     # beside its own row, clear of the axis and of the value label
     axc.text(max(gains) * 0.30, yy[keys.index("train_mean")],
-             "does not read the\nembedding: unchanged",
+             "predicts zero:\nunchanged",
              fontsize=5.0, color=ns.C_TEXT, ha="left", va="center")
 
     res = ns.save_nature(fig, "fig2_main", outdir=outdir, width_mm=w_mm)

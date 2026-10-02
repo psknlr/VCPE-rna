@@ -24,7 +24,7 @@ def main(outdir="figures"):
     axa = fig.add_subplot(gs[0, 0]); ns.tidy(axa); ns.panel_label(axa, "a")
     rep = d["e6_masked"]
     pairs = [("Raw fold\nchange", rep["pearson_delta"], ns.C_ALT),
-             ("Residual after\nremoving the\nshared core", rep["pearson_dev"],
+             ("Residual after\nremoving the\nshared response", rep["pearson_dev"],
               ns.C_MODEL)]
     axa.bar([0, 1], [p[1] for p in pairs], width=0.5,
             color=[p[2] for p in pairs], linewidth=0)
@@ -36,14 +36,14 @@ def main(outdir="figures"):
                  fontsize=5.4)
     axa.set_title("Predicted quantity", fontsize=6.0, pad=3)
     axa.text(0.5, pairs[0][1] * 1.17,
-             f"{pairs[0][1] - pairs[1][1]:+.3f} from the\nresponse shared "
-             f"across genes", ha="center", fontsize=5.0, color=ns.C_TEXT)
+             f"{pairs[0][1] - pairs[1][1]:+.3f} from the response\nshared "
+             f"across perturbations", ha="center", fontsize=5.0, color=ns.C_TEXT)
 
     # ---------------- b: masking unmeasured genes ----------------------
     axb = fig.add_subplot(gs[0, 1]); ns.tidy(axb); ns.panel_label(axb, "b")
     m, u = d["e6_masked"], d["e6_unmasked"]
-    keys = [("P3 head", m["pearson_dev"], u["pearson_dev"]),
-            ("Train mean", m["baselines"]["train_mean"]["pearson_dev"],
+    keys = [("Conditioned\nhead", m["pearson_dev"], u["pearson_dev"]),
+            ("Training\nmean", m["baselines"]["train_mean"]["pearson_dev"],
              u["baselines"]["train_mean"]["pearson_dev"])]
     x = np.arange(len(keys)); wdt = 0.34
     axb.bar(x - wdt / 2, [k[1] for k in keys], wdt, color=ns.C_MODEL, linewidth=0,
@@ -61,16 +61,13 @@ def main(outdir="figures"):
     axb.yaxis.set_minor_formatter(NullFormatter())
     axb.legend(fontsize=5.2, loc="upper center", ncol=2, handlelength=1.0,
                borderpad=0.2, columnspacing=0.7)
-    axb.set_title("Unmeasured genes", fontsize=6.0, pad=3)
+    axb.set_title("Unmeasured genes (0.14% of held-out entries)", fontsize=6.0, pad=3)
     dlt = keys[1][2] - keys[1][1]
-    axb.annotate(f"a baseline with no gene\ninformation gains {dlt:+.4f}",
-                 xy=(1 + wdt / 2, keys[1][2]), xytext=(0.52, 0.12),
+    axb.annotate(f"a predictor with no\nperturbation information\ngains {dlt:+.4f}",
+                 xy=(1 + wdt / 2, keys[1][2]), xytext=(1.0, 0.10),
                  fontsize=5.0, color=ns.C_TEXT, ha="center",
                  arrowprops=dict(arrowstyle="-|>", lw=0.7, color=ns.C_ACCENT,
                                  mutation_scale=5))
-    # placed low-left: the upper-right is the key, and the centre is the arrow
-    axb.text(-0.42, 0.0030, "only 0.14% of this\npanel is unmeasured:\na lower bound",
-             fontsize=5.0, ha="left", va="center", color=ns.C_TEXT)
 
     # ---------------- c: inner-val vs held-out, per design -------------
     axc = fig.add_subplot(gs[0, 2]); ns.tidy(axc); ns.panel_label(axc, "c")
@@ -85,16 +82,12 @@ def main(outdir="figures"):
     axc.set_yticks(yy); axc.set_yticklabels(labs, fontsize=5.0)
     axc.set_xlabel("Ridge $r$ on inner validation")
     axc.set_xlim(0, max(iv) * 1.16)
-    axc.set_title("Feature search, selected without touching held-out data",
+    axc.set_title("Representation designs, inner validation only",
                   fontsize=6.0, pad=3)
     axc.text(held + max(iv) * 0.012, 0.15,
              f"held-out ridge\n{held:+.3f}", fontsize=5.0, color=ns.C_TEXT,
              va="bottom")
-    axc.text(max(iv) * 0.47, len(var) - 0.2,
-             "inner-validation scores run high: they are the slice\n"
-             "the panel and split were derived around",
-             fontsize=5.0, ha="center", color=ns.C_TEXT)
-    axc.set_ylim(-0.7, len(var) + 0.35)
+    axc.set_ylim(-0.7, len(var) - 0.3)
 
     res = ns.save_nature(fig, "fig5_diagnostics", outdir=outdir, width_mm=w_mm)
     res["font"] = style

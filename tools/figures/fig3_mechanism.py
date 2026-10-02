@@ -51,7 +51,7 @@ def main(outdir="figures"):
         axa.text(v + rows["intact"][1] * 0.02, y, f"{v:+.3f}", va="center",
                  fontsize=5.2)
     axa.text(rows["intact"][1] * 0.40, yy[-1] - 0.95,
-             "grey channels leave the prediction\nbit-identical: they carry nothing",
+             "grey: $r$ changes by less than 0.00001",
              fontsize=5.0, color=ns.C_TEXT, ha="center", va="center")
     axa.set_ylim(-1.5, len(labs) - 0.4)
 
@@ -82,22 +82,22 @@ def main(outdir="figures"):
     axc = fig.add_subplot(gs[0, 2]); ns.tidy(axc); ns.panel_label(axc, "c")
     base = d["plain_150M"]["model"]["mean"]
     chan = d["string_channel"]["model"]["mean"]
-    dense = d["graph_80ep"]["model"]["mean"]
+    dense = d["graph_30ep"]["model"]["mean"]   # same 30-epoch budget as both others
     gains = [chan - base, dense - base]
     axc.bar([0, 1], gains, width=0.5, color=[ns.C_BASE, ns.C_MODEL], linewidth=0)
     axc.axhline(0, color=ns.C_FLOOR, lw=0.8)
     axc.set_xticks([0, 1])
     # the coverage contrast belongs in the tick label: placed inside the panel it
     # lands on top of the bar it describes
-    axc.set_xticklabels(["Sparse partner indicator\n(0.27% of scored cells)",
-                         "Dense neighbourhood embedding\n(every gene, every cell)"],
+    axc.set_xticklabels(["Sparse partner indicator\n(0.27% of scored entries)",
+                         "Dense neighbourhood\nembedding (all genes)"],
                         fontsize=5.2)
-    axc.set_ylabel("Gain over ESM2 only (Δ held-out $r$)")
+    axc.set_ylabel("Gain over ESM2-150M (Δ held-out $r$)")
     axc.set_ylim(-0.004, max(gains) * 1.30)
     for xi, v in zip((0, 1), gains):
         axc.text(xi, v + max(gains) * 0.035, f"{v:+.4f}", ha="center", fontsize=5.4)
     axc.text(0.5, max(gains) * 1.14,
-             "support, not biology, is the limit", ha="center", fontsize=5.0,
+             "head, all at 30 epochs", ha="center", fontsize=5.0,
              color=ns.C_TEXT)
 
     res = ns.save_nature(fig, "fig3_mechanism", outdir=outdir, width_mm=w_mm)

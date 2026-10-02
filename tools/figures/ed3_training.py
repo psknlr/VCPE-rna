@@ -18,9 +18,9 @@ import nature_style as ns                                       # noqa: E402
 
 TRAJ = [  # (config key or "probe", label, colour)
     ("plain_150M", "ESM2-150M, 30 epochs", ns.C_BASE),
-    ("graph_30ep", "+ STRING graph, 30 epochs", ns.OKABE_ITO["sky"]),
-    ("graph_80ep", "+ STRING graph, 80 epochs", ns.C_MODEL),
-    ("probe", "+ STRING graph, 150 epochs (split 0)", ns.C_FLOOR),
+    ("graph_30ep", "+ STRING neighbourhood, 30 epochs", ns.OKABE_ITO["sky"]),
+    ("graph_80ep", "+ STRING neighbourhood, 80 epochs", ns.C_MODEL),
+    ("probe", "+ STRING neighbourhood, 150 epochs (split 0)", ns.C_FLOOR),
 ]
 
 
@@ -70,7 +70,7 @@ def main(outdir="figures/extended_data"):
              ha="right", va="bottom", fontsize=5.4)
     axc.set_xlabel("Epoch")
     axc.set_ylabel("$r$(prediction, prediction with the\n"
-                   "target vector set to zero)")
+                   "target embedding set to zero)")
     axc.set_ylim(0, 1.0)
     axc.text(0.98, 0.95, "1 = conditioning has no effect", transform=axc.transAxes,
              ha="right", va="top", fontsize=5.4)

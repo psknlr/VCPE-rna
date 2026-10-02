@@ -47,9 +47,9 @@ def main(outdir="figures/extended_data"):
 
     # ---------------- b: pooled versus per perturbation ----------------
     ax = fig.add_subplot(gs[0, 1]); ns.tidy(ax); ns.panel_label(ax, "b")
-    ctl = [("ridge_esm2", "ESM2 ridge", ns.C_ALT, "s"),
-           ("knn_esm2", "ESM2 k-NN", ns.OKABE_ITO["purple"], "^"),
-           ("train_mean", "Train mean", ns.C_BASE, "D")]
+    ctl = [("ridge_esm2", "Ridge regression", ns.C_ALT, "s"),
+           ("knn_esm2", "k-NN", ns.OKABE_ITO["purple"], "^"),
+           ("train_mean", "Training mean", ns.C_BASE, "D")]
     for name, label, col, mar in ctl:
         px, py = [], []
         for key, _, _, _ in d["configs"]:
@@ -73,12 +73,12 @@ def main(outdir="figures/extended_data"):
     assert abs(abl["intact"]["top50_dev"] - rep["top50_dev"]) < 1e-9, \
         "the ablation and the report must be the same checkpoint and split"
     rows = [
-        ("Predict no change", rep["baselines"]["zero"]["top50_dev"], ns.C_ACCENT),
-        ("Train mean", rep["baselines"]["train_mean"]["top50_dev"], ns.C_BASE),
-        ("ESM2 k-NN", rep["baselines"]["knn_esm2"]["top50_dev"], ns.C_BASE),
-        ("ESM2 ridge", rep["baselines"]["ridge_esm2"]["top50_dev"], ns.C_BASE),
-        ("P3 head", rep["top50_dev"], ns.C_MODEL),
-        ("Head, target vector → 0", abl["esm_zero"]["top50_dev"], ns.C_MODEL),
+        ("No change", rep["baselines"]["zero"]["top50_dev"], ns.C_FLOOR),
+        ("Training mean", rep["baselines"]["train_mean"]["top50_dev"], ns.C_BASE),
+        ("k-NN", rep["baselines"]["knn_esm2"]["top50_dev"], ns.OKABE_ITO["purple"]),
+        ("Ridge regression", rep["baselines"]["ridge_esm2"]["top50_dev"], ns.C_ALT),
+        ("Conditioned head", rep["top50_dev"], ns.C_MODEL),
+        ("Head, target embedding → 0", abl["esm_zero"]["top50_dev"], ns.C_MODEL),
         ("Head, all conditioning off", abl["all_off"]["top50_dev"], ns.C_MODEL),
     ]
     k = 50
@@ -97,7 +97,7 @@ def main(outdir="figures/extended_data"):
     ax.annotate("", xy=(chance, y0 + 0.36), xytext=(rows[0][1], y0 + 0.36),
                 arrowprops=dict(arrowstyle="-|>", lw=0.7, color=ns.C_FLOOR,
                                 mutation_scale=5))
-    ax.text((chance + rows[0][1]) / 2, y0 + 0.50, "tie-aware form (E16)",
+    ax.text((chance + rows[0][1]) / 2, y0 + 0.50, "tie-aware definition",
             fontsize=5.0, ha="center", va="bottom")
     ax.set_yticks(yy)
     ax.set_yticklabels([r[0] for r in rows], fontsize=5.6)

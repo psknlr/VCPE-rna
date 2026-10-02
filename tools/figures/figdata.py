@@ -140,14 +140,17 @@ def ablation_rows(abl):
 
 def pretty(name):
     return {
-        "P3 head": "P3 head", "zero": "Predict no change",
-        "train_mean": "Train mean", "knn_esm2": "ESM2 k-NN",
-        "ridge_esm2": "ESM2 ridge", "neighbor_prior": "STRING prior",
-        "intact": "Intact", "esm_zero": "Target vector → 0",
-        "esm_shuffle": "Target vector permuted", "rna_off": "RNA axis off",
-        "is_tgt_off": "is-target off", "is_tgt_shuffle": "is-target permuted",
-        "is_nb_off": "is-neighbour off", "is_nb_shuffle": "is-neighbour permuted",
-        "ds_shuffle": "Dataset embedding permuted", "all_off": "All conditioning off",
+        "P3 head": "Conditioned head", "zero": "No change",
+        "train_mean": "Training mean", "knn_esm2": "k-NN",
+        "ridge_esm2": "Ridge regression", "neighbor_prior": "Neighbour prior",
+        "intact": "Intact", "esm_zero": "Target embedding → 0",
+        "esm_shuffle": "Target embedding permuted",
+        "rna_off": "RNA-sequence block off",
+        "is_tgt_off": "Target indicator off",
+        "is_tgt_shuffle": "Target indicator permuted",
+        "is_nb_off": "Partner indicator off",
+        "is_nb_shuffle": "Partner indicator permuted",
+        "ds_shuffle": "Screen embedding permuted", "all_off": "All conditioning off",
     }.get(name, name)
 
 
@@ -158,9 +161,9 @@ def pretty(name):
 CONFIGS = [
     ("plain_35M", "ESM2-35M", "results/real_35M/A_seeds", 30),
     ("plain_150M", "ESM2-150M", "results/real_150M/A_seeds", 30),
-    ("string_channel", "+ STRING indicator", "results/real_150M_string/A_seeds", 30),
-    ("graph_30ep", "+ STRING graph, 30 ep", "results/real_150M_graph/A_seeds", 30),
-    ("graph_80ep", "+ STRING graph, 80 ep", "results/real_150M_graph_long/A_seeds", 80),
+    ("string_channel", "+ STRING partner indicator", "results/real_150M_string/A_seeds", 30),
+    ("graph_30ep", "+ STRING neighbourhood, 30 ep", "results/real_150M_graph/A_seeds", 30),
+    ("graph_80ep", "+ STRING neighbourhood, 80 ep", "results/real_150M_graph_long/A_seeds", 80),
 ]
 
 
