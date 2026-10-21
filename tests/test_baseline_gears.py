@@ -22,6 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "maprna_p3"))
 sys.path.insert(0, str(ROOT / "src"))
 
+# baseline_gears imports train_p3, which imports torch at module scope. Without
+# this the file fails at COLLECTION and takes the whole `tests/` run with it,
+# including the torch-free metric regressions the fast CI job exists to enforce.
+pytest.importorskip("torch")
+
 from baseline_gears import align_to_hvg, vcpe_split_to_gears  # noqa: E402
 
 

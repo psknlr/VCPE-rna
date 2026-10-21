@@ -31,6 +31,17 @@ response direction and magnitude — a commercially usable replacement for Non-C
 > **[docs/ERRATA.md](docs/ERRATA.md)**; how to regenerate the numbers under the
 > corrected protocol is in **[docs/REPRODUCE.md](docs/REPRODUCE.md)**. The code in `src/` is fixed.
 >
+> **A later pass found two more, and they bear on the real-data numbers below.**
+> The inner-validation slice that selects the epoch was **also used as training
+> data**, so the response head's "validation" curve was a training curve — which
+> is why every long run selected its final epoch — and the head was fitted on
+> ~18% more items than the GEARS and CPA comparison it is set beside (E16). And
+> the CI job whose stated job is to stop the errata returning **had never run**:
+> four tests import torch at collection time, which aborts the whole run rather
+> than skipping, so it failed in under a second on every push (E17). Both are
+> fixed; the response-line re-run on the corrected footing is the first
+> outstanding item.
+>
 > **The first corrected measurements on real data are in
 > [docs/RESULTS_REAL.md](docs/RESULTS_REAL.md)**, on two real CRISPRi screens
 > under a held-out-gene split. Two findings matter more than any single number:
@@ -351,9 +362,16 @@ on the shipped one.
    a random split over (dataset, condition) pairs does not produce unseen
    perturbations (E5). The same applies to ASO Atlas patent tables and to
    siRNAmod parent duplexes.
-4. **Select on data you will not report.** Three independent scripts here chose
-   the reported epoch using the reported slice (E3). An inner validation split
-   costs one line and is the difference between an estimate and a maximum.
+4. **Select on data you will not report — and check that you did not fit it.**
+   Three independent scripts here chose the reported epoch using the reported
+   slice (E3). An inner validation split costs one line and is the difference
+   between an estimate and a maximum. But carving the slice out is only half of
+   it: for two releases the response head went on *training* on those items, so
+   its "validation" curve was a training curve that could only rise, and every
+   long run duly selected its final epoch (E16). A selection slice that the
+   gradient also sees is not a selection slice, and the symptom — selection
+   always landing on the last epoch — reads like an undertrained model rather
+   than like a defect.
 5. **A permutation-invariant encoder cannot model position.** Self-attention
    plus mean/max pooling with no positional signal is a bag of tokens; it cannot
    express where a chemical modification sits, however many modification

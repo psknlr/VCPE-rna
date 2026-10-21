@@ -125,9 +125,71 @@ def test_baselines_are_reported_beside_the_model(trained):
     # neighbor_prior is absent without a STRING table on purpose: with no graph it
     # is identical to train_mean, and a duplicate row reads like a second,
     # independent control agreeing with the first.
-    assert set(final["baselines"]) == {"zero", "train_mean", "knn_esm2", "ridge_esm2"}
+    assert set(final["baselines"]) == {
+        "zero", "train_mean", "knn_esm2", "ridge_esm2",
+        # the same estimators with their one knob chosen on inner validation,
+        # plus the non-linear rung between a linear map and the head
+        "ridge_esm2_sel", "knn_esm2_sel", "rff_ridge_esm2_sel"}
     for m in final["baselines"].values():
         assert np.isfinite(m["pearson_dev"])
+
+
+def test_every_control_row_carries_its_hyperparameters_and_how_they_were_chosen(trained):
+    """A control quoted without its hyperparameter is as uncomparable as a score
+    quoted without its estimator: alpha=1.0 and a selected alpha are different
+    controls, and the gap between them is part of what the table shows."""
+    out, log = trained
+    final = json.loads((out / "final_report.json").read_text())
+    b = final["baselines"]
+    assert b["ridge_esm2"]["hyperparameters"] == {"alpha": 1.0,
+                                                  "chosen_by": "fixed default"}
+    assert b["knn_esm2"]["hyperparameters"] == {"k": 10,
+                                                "chosen_by": "fixed default"}
+    for name in ("ridge_esm2_sel", "knn_esm2_sel", "rff_ridge_esm2_sel"):
+        assert b[name]["hyperparameters"]["chosen_by"] == "inner_val"
+
+    sel = final["control_selection"]
+    assert sel["selected_on"] == "inner_val"
+    assert sel["n_val_items"] == final["n_inner_val_items"], \
+        "the controls must be selected on the slice that selects the head's epoch"
+    assert sel["n_fit_items"] == final["n_fit_items"]
+    assert len(sel["grids"]["ridge_alpha"]) >= 5
+    assert "held-out set not consulted" in log
+
+
+def test_each_control_carries_a_paired_item_level_interval_against_the_model(trained):
+    """Every comparison in this repository was settled by a normal approximation
+    over 3 seeds, which at n=3 is wide almost regardless of the data. The
+    item-level interval is a different and much larger sample -- and it must say
+    what it does not cover, or a reader will take a three-seed tie as resolved."""
+    out, _ = trained
+    final = json.loads((out / "final_report.json").read_text())
+    for name, m in final["baselines"].items():
+        pb = m["paired_vs_model_items"]
+        assert pb["resampled"] == "items within one split"
+        assert "run_seeds" in pb["does_not_cover"]
+        # the reported difference must be the one the two scored numbers imply
+        assert pb["difference"] == pytest.approx(
+            final["pearson_dev"] - m["pearson_dev"], abs=1e-9), \
+            f"{name}'s paired difference disagrees with its own row"
+
+
+def test_secondary_metrics_are_reported_with_their_chance_levels(trained):
+    """ERRATA E2 was a metric whose chance level was misscaled, so chance read
+    0.25. The chance level now travels with the number."""
+    out, _ = trained
+    final = json.loads((out / "final_report.json").read_text())
+    rows = [final] + list(final["baselines"].values())
+    for r in rows:
+        assert set(r["secondary_metric_chance_levels"]) == {
+            "spearman_dev", "enrichment_top5pct_dev",
+            "direction_agreement_top10pct_dev"}
+        assert r["secondary_metric_chance_levels"]["enrichment_top5pct_dev"] == 1.0
+        for k in r["secondary_metric_chance_levels"]:
+            assert k in r, f"{k} has a chance level but no value"
+    # the floor baseline must sit at chance on the metrics that have one
+    zero = final["baselines"]["zero"]
+    assert zero["spearman_dev"] == pytest.approx(0.0)
 
 
 def test_checkpoint_records_its_selection_and_split(trained):
@@ -301,6 +363,154 @@ def test_ablation_quotes_the_shuffle_floor_not_the_zeroed_one(synth, trained):
                - (interp["intact_pearson_dev"]
                   - interp["no_conditioning_floor_shuffled"])) < 1e-9
     assert "upper bound" in interp["note"] or "upper bound" in log
+
+
+def test_the_selection_slice_is_not_in_the_gradient_and_the_report_says_so(trained):
+    """ERRATA E16, measured through the real producer.
+
+    The inner-validation slice selects the epoch, so it must not be fitted. The
+    accounting has to add up in the report as well as in the loop, because the
+    footing claim made in Table D -- that the head and the external baselines
+    share a split -- is read off these fields.
+    """
+    out, log = trained
+    rep = json.loads((out / "final_report.json").read_text())
+
+    assert rep["trained_on_inner_val"] is False
+    assert rep["n_inner_val_items"] > 0, "no selection slice was carved out"
+    assert rep["n_fit_items"] == rep["n_train_items"] - rep["n_inner_val_items"], (
+        "the gradient set is not the complement of the selection slice: "
+        f"{rep['n_fit_items']} fitted of {rep['n_train_items']} training items "
+        f"with {rep['n_inner_val_items']} held out for selection")
+    assert f"gradient items: {rep['n_fit_items']} of" in log
+    assert "inner-val held out of the gradient" in log
+
+    # every control is fitted on exactly those items, or the table compares
+    # models that saw different data
+    for name, m in rep["baselines"].items():
+        assert m["fit_items"] == rep["n_fit_items"], \
+            f"{name} was fitted on {m['fit_items']} items, the head on {rep['n_fit_items']}"
+    assert str(rep["n_fit_items"]) in rep["footing"]
+
+
+def test_the_old_fit_rule_is_reachable_and_labels_itself(synth):
+    """--train_on_inner_val reproduces the pre-fix behaviour so its effect can be
+    measured, and must be impossible to mistake for the default (cf. --no_mask,
+    --hvg_from all)."""
+    out = synth / "p3_e16_old"
+    log = _run(["src/maprna_p3/train_p3.py",
+                "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+                "--esm_table", str(synth / "esm.pt"), "--out_dir", str(out),
+                "--epochs", "2", "--n_hvg", "40", "--batch_size", "8",
+                "--split_by", "target_gene", "--train_on_inner_val"])
+    rep = json.loads((out / "final_report.json").read_text())
+    assert rep["trained_on_inner_val"] is True
+    assert rep["n_fit_items"] == rep["n_train_items"], \
+        "the old rule fits every training item, selection slice included"
+    assert "ERRATA E16" in log, "the old rule must announce itself"
+    assert "E16" in rep["footing"]
+
+
+def test_the_report_says_whether_the_budget_ended_the_run(trained):
+    """RESULTS_REAL.md had to say this in prose three times (78/80, 150/150): a
+    selected epoch equal to the budget means the model was still improving, so
+    the number is a floor under that budget rather than a converged estimate."""
+    out, _ = trained
+    rep = json.loads((out / "final_report.json").read_text())
+    assert rep["epochs_budget"] == 4
+    assert rep["selection_hit_budget"] == (rep["selected_epoch"] >= 4)
+
+
+def _resume_common(synth, out, epochs):
+    return ["src/maprna_p3/train_p3.py",
+            "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+            "--esm_table", str(synth / "esm.pt"), "--out_dir", str(out),
+            "--epochs", str(epochs), "--n_hvg", "40", "--batch_size", "8",
+            "--split_by", "target_gene", "--rff_features", "128",
+            "--n_boot_items", "200"]
+
+
+def test_a_chunked_resumed_run_equals_an_uninterrupted_one(synth):
+    """The declared 150-epoch run in RESULTS_REAL.md was never completed: this
+    container restarted twice mid-run and no seed finished, so the comparison
+    that would settle head-vs-ridge is still missing. Resume only helps if a
+    resumed run IS the interrupted run -- otherwise it is a different experiment
+    wearing the same budget. Checked here by running 8 epochs straight through
+    and 3+3+2 with two stops, and requiring the reports to be identical.
+    """
+    full, chunk = synth / "res_full", synth / "res_chunk"
+    _run(_resume_common(synth, full, 8))
+    for _ in range(2):
+        log = _run(_resume_common(synth, chunk, 8)
+                   + ["--resume", "--stop_after_epochs", "3"])
+        assert "STOPPED at" in log
+    log = _run(_resume_common(synth, chunk, 8) + ["--resume"])
+    assert "[resume] continuing at epoch 7/8" in log
+
+    a = json.loads((full / "final_report.json").read_text())
+    b = json.loads((chunk / "final_report.json").read_text())
+    a.pop("provenance", None), b.pop("provenance", None)
+    assert a == b, "a resumed run must be the run it resumed, to the last digit"
+
+    def losses(p):
+        out = []
+        for line in p.read_text().splitlines():
+            r = json.loads(line)
+            if "epoch" in r and "train_loss" in r:
+                out.append((r["epoch"], r["train_loss"]))
+        return out
+    assert losses(full / "train_log.jsonl") == losses(chunk / "train_log.jsonl"), \
+        "the per-epoch training losses must match, or the RNG stream was not restored"
+
+
+def test_an_incomplete_run_writes_no_result(synth):
+    """A number from a partial budget is not a result, so there must be nothing
+    for anyone to quote."""
+    out = synth / "res_partial"
+    _run(_resume_common(synth, out, 6) + ["--resume", "--stop_after_epochs", "2"])
+    assert (out / "resume_state.pt").exists()
+    assert not (out / "final_report.json").exists(), \
+        "a partial budget must not leave a final report behind"
+    rec = [json.loads(l) for l in (out / "train_log.jsonl").read_text().splitlines()]
+    assert any(r.get("stopped_early") for r in rec), \
+        "the log must record that the run was incomplete"
+
+
+def test_resuming_cannot_change_the_declared_budget(synth):
+    """"Extend the budget until the favoured model wins" is the abuse
+    RESULTS_REAL.md names. A resume that accepts a larger --epochs is how that
+    happens by accident."""
+    out = synth / "res_budget"
+    _run(_resume_common(synth, out, 6) + ["--resume", "--stop_after_epochs", "2"])
+    p = subprocess.run([sys.executable] + _resume_common(synth, out, 12)
+                       + ["--resume"], cwd=ROOT, capture_output=True, text=True,
+                       timeout=900)
+    assert p.returncode != 0
+    assert "not a budget change" in (p.stdout + p.stderr)
+
+
+def test_resuming_into_a_different_experiment_is_refused(synth):
+    """Same out_dir, different panel: the stored split no longer describes this
+    run, and splicing them would put two experiments in one number."""
+    out = synth / "res_fingerprint"
+    _run(_resume_common(synth, out, 6) + ["--resume", "--stop_after_epochs", "2"])
+    args = _resume_common(synth, out, 6)
+    args[args.index("--n_hvg") + 1] = "30"          # a different gene panel
+    p = subprocess.run([sys.executable] + args + ["--resume"], cwd=ROOT,
+                       capture_output=True, text=True, timeout=900)
+    assert p.returncode != 0
+    assert "different experiment" in (p.stdout + p.stderr)
+
+
+def test_stopping_early_without_resume_is_refused(synth):
+    """Without a state file the epochs run in this invocation are lost, not
+    continued, which would silently turn a declared budget into a short one."""
+    p = subprocess.run(
+        [sys.executable] + _resume_common(synth, synth / "res_nostate", 6)
+        + ["--stop_after_epochs", "2"], cwd=ROOT, capture_output=True,
+        text=True, timeout=900)
+    assert p.returncode != 0
+    assert "needs --resume" in (p.stdout + p.stderr)
 
 
 def test_a_rerun_marks_the_log_boundary_instead_of_silently_concatenating(synth):

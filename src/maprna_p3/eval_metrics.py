@@ -18,6 +18,15 @@ Two rules encoded here:
    perturbation of that dataset -- a per-dataset constant with no
    perturbation-specific content. Scoring it rewards reproducing that constant
    (docs/ERRATA.md, E6).
+
+3. **Say which source of variation an interval covers.** `bootstrap_ci_per_item`
+   and `paired_bootstrap_per_item` resample ITEMS within one split: they answer
+   "would this hold on another sample of perturbations from this split". The
+   multi-seed interval in `run_seeds.py` resamples SPLITS: it answers "would this
+   hold if different genes were held out". They are not interchangeable and
+   neither is a substitute for the other -- the item-level one is much tighter
+   with a few hundred items, and reporting it alone would make a three-seed tie
+   look like a resolved comparison. Report both, labelled.
 """
 import numpy as np
 
@@ -56,6 +65,138 @@ def per_item_correlation(true_mat, pred_mat, mask=None, min_features=10):
         else:
             rs.append(0.0)
     return float(np.mean(rs)) if rs else float("nan")
+
+
+def per_item_correlation_vector(true_mat, pred_mat, mask=None, min_features=10):
+    """The within-item correlations themselves, one per item, NaN where skipped.
+
+    `per_item_correlation` is `np.nanmean` of this. Exposed because a bootstrap
+    over items only needs these values once -- an item's correlation does not
+    depend on which other items are in the sample -- and because the distribution
+    is worth looking at: a mean of 0.29 can be a tight cluster or a third of the
+    items near zero and a few near 0.8, and those are different findings.
+    """
+    out = np.full(len(np.asarray(true_mat)), np.nan, dtype=np.float64)
+    for i, (x, y) in enumerate(_rows(true_mat, pred_mat, mask)):
+        if x.size < min_features:
+            continue
+        if np.std(x) > 1e-12 and np.std(y) > 1e-12:
+            out[i] = float(np.corrcoef(x, y)[0, 1])
+        else:
+            out[i] = 0.0
+    return out
+
+
+def per_item_correlation_detail(true_mat, pred_mat, mask=None, min_features=10):
+    """`per_item_correlation`, plus the bookkeeping it has to throw away.
+
+    The mean alone hides two things that change how it should be read:
+
+    * items skipped for having fewer than `min_features` measured genes -- the
+      mask can shrink an item's feature count well below the nominal panel size,
+      and a mean over 40 of 352 items is a different quantity from a mean over
+      352.
+    * items scored as exactly 0.0 because the true or predicted profile is
+      constant. That is the right value (no variance, no correlation) but it is
+      imputed rather than measured, and a baseline that predicts a constant for
+      every item scores 0.0 by this route rather than by being wrong in an
+      interesting way.
+
+    Returns the mean and those counts. `per_item_correlation` is this function's
+    mean, unchanged, so no reported number moves.
+    """
+    rs, n_degenerate, n_skipped = [], 0, 0
+    for x, y in _rows(true_mat, pred_mat, mask):
+        if x.size < min_features:
+            n_skipped += 1
+            continue
+        if np.std(x) > 1e-12 and np.std(y) > 1e-12:
+            rs.append(float(np.corrcoef(x, y)[0, 1]))
+        else:
+            rs.append(0.0)
+            n_degenerate += 1
+    return dict(value=(float(np.mean(rs)) if rs else float("nan")),
+                n_scored=len(rs), n_degenerate=n_degenerate,
+                n_skipped_too_few_features=n_skipped,
+                min_features=int(min_features))
+
+
+def per_item_spearman(true_mat, pred_mat, mask=None, min_features=10):
+    """Mean of within-item SPEARMAN r. A distinct estimator, named separately.
+
+    Rank correlation answers a different question from `per_item_correlation`:
+    whether the ordering of the response across genes is right, without credit
+    for getting the magnitudes right. On this data the two can disagree -- a
+    model that gets a few large-magnitude genes right scores well on Pearson and
+    poorly on Spearman -- so the choice is a reporting decision, not a detail.
+    E4 happened because two estimators were reported under one name; this one
+    carries its own.
+    """
+    rs = []
+    for x, y in _rows(true_mat, pred_mat, mask):
+        if x.size < min_features:
+            continue
+        if np.std(x) > 1e-12 and np.std(y) > 1e-12:
+            rx = np.argsort(np.argsort(x)).astype(np.float64)
+            ry = np.argsort(np.argsort(y)).astype(np.float64)
+            rs.append(float(np.corrcoef(rx, ry)[0, 1]))
+        else:
+            rs.append(0.0)
+    return float(np.mean(rs)) if rs else float("nan")
+
+
+def enrichment_factor(true_mat, pred_mat, k_frac=0.05, mask=None, min_features=20):
+    """Mean per-item enrichment of truly-large responses among the top `k_frac`.
+
+    Scaled so that **chance is 1.0**: the fraction of the item's true top
+    `k_frac` genes recovered, divided by `k_frac`. ERRATA E2 is this metric with
+    the wrong divisor -- the top-5% enrichment was scaled by 5 instead of 20, so
+    chance read 0.25 and a model performing at chance looked like it was finding
+    four times less than nothing. The scaling lives here, once, with a test that
+    pins chance at 1.0.
+
+    `k_frac` is a fraction, not a count, so items with different numbers of
+    measured genes are comparable.
+    """
+    outs = []
+    for x, y in _rows(true_mat, pred_mat, mask):
+        if x.size < min_features:
+            continue
+        k = int(max(1, round(x.size * k_frac)))
+        if k >= x.size:
+            continue                      # selecting everything is not enrichment
+        true_top = set(np.argsort(-np.abs(x))[:k])
+        pred_top = np.argsort(-np.abs(y))[:k]
+        hit = len(true_top & set(pred_top)) / k
+        outs.append(hit / (k / x.size))   # divide by the chance rate, not by 1/k_frac
+    return float(np.mean(outs)) if outs else float("nan")
+
+
+def direction_agreement(true_mat, pred_mat, mask=None, top_frac=0.1,
+                        min_features=20):
+    """Fraction of correctly signed predictions among each item's largest responses.
+
+    Restricted to the top `top_frac` of genes by true |response|, because the sign
+    of a near-zero response is noise and scoring it dilutes the metric towards
+    50% regardless of the model. Chance is 0.5.
+
+    This is the quantity a user of a knockdown-response prediction actually acts
+    on -- "does this gene go up or down" -- and it is not implied by a
+    correlation: a model can correlate well and still have the sign wrong on the
+    genes with the largest effects.
+    """
+    outs = []
+    for x, y in _rows(true_mat, pred_mat, mask):
+        if x.size < min_features:
+            continue
+        k = int(max(1, round(x.size * top_frac)))
+        sel = np.argsort(-np.abs(x))[:k]
+        sx, sy = np.sign(x[sel]), np.sign(y[sel])
+        ok = sx != 0
+        if not ok.any():
+            continue
+        outs.append(float((sx[ok] == sy[ok]).mean()))
+    return float(np.mean(outs)) if outs else float("nan")
 
 
 def top_k_overlap(true_mat, pred_mat, k=50, mask=None, min_ratio=2):
@@ -113,3 +254,79 @@ def bootstrap_ci_per_item(true_mat, pred_mat, mask=None, n_boot=1000,
     if not vals:
         return (float("nan"), float("nan"))
     return (float(np.quantile(vals, alpha / 2)), float(np.quantile(vals, 1 - alpha / 2)))
+
+
+def paired_bootstrap_per_item(true_mat, pred_a, pred_b, mask=None, n_boot=2000,
+                              alpha=0.05, seed=0, min_items=8):
+    """CI on `per_item_correlation(a) - per_item_correlation(b)`, resampling ITEMS.
+
+    Why this exists
+    ---------------
+    Every comparison in this repository is currently settled by a normal
+    approximation over 3 or 5 seeds. With n=3 that interval is wide almost
+    regardless of the data -- the head-vs-ridge CI of [-0.031, +0.026] is
+    consistent with a real effect of either sign -- so "tie" has been doing
+    double duty for "no difference" and "no power". This resamples the 350-odd
+    held-out perturbations instead, which is a different and much larger sample.
+
+    Both methods are scored on the SAME resampled items in every replicate.
+    Pairing is the point: the item-to-item variance of the metric is far larger
+    than the gap between two methods, so an unpaired interval would drown it.
+
+    What it does NOT cover
+    ----------------------
+    The split. These items are the held-out set of one grouped split, so the
+    interval answers "would this difference survive another sample of
+    perturbations from this split", not "would it survive holding out different
+    genes". That second question is what `run_seeds.py` answers, and on this data
+    it is the harder one: ridge's own score moved 0.039 between splits. A
+    narrow interval here beside a wide one there means the difference is stable
+    given the split and not yet established across splits -- which is a finding,
+    not a contradiction. Report both.
+
+    Returns a dict with the observed difference, the percentile CI, the fraction
+    of replicates favouring `a`, and a one-line statement of what varied.
+    """
+    a = np.asarray(true_mat)
+    pa, pb = np.asarray(pred_a), np.asarray(pred_b)
+    m = None if mask is None else np.asarray(mask)
+    n = len(a)
+    obs = (per_item_correlation(a, pa, m) - per_item_correlation(a, pb, m))
+    out = dict(difference=float(obs), n_items=int(n), n_boot=int(n_boot),
+               resampled="items within one split",
+               does_not_cover="split-to-split variation; see run_seeds.py")
+    if n < min_items:
+        out.update(ci95=[float("nan"), float("nan")], frac_boot_favouring_a=None,
+                   note=f"only {n} items; too few to resample")
+        return out
+    # An item's within-item correlation does not depend on which other items are
+    # in the sample, so the per-item values are computed once and the replicates
+    # resample those. This is exact, not an approximation of the naive loop
+    # (`tests/test_metrics.py` pins the two together), and it is what makes the
+    # interval cheap enough to report on every row of every table rather than as
+    # a special-occasion analysis.
+    ra = per_item_correlation_vector(a, pa, m)
+    rb = per_item_correlation_vector(a, pb, m)
+    scored = np.isfinite(ra) & np.isfinite(rb)
+    out["n_items_scored"] = int(scored.sum())
+    if scored.sum() < min_items:
+        out.update(ci95=[float("nan"), float("nan")], frac_boot_favouring_a=None,
+                   note=f"only {int(scored.sum())} scorable items")
+        return out
+    rng = np.random.default_rng(seed)
+    diffs = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        s = scored[idx]
+        if not s.any():
+            continue
+        k = idx[s]
+        diffs.append(float(ra[k].mean() - rb[k].mean()))
+    if not diffs:
+        out.update(ci95=[float("nan"), float("nan")], frac_boot_favouring_a=None)
+        return out
+    d = np.asarray(diffs)
+    lo, hi = (float(np.quantile(d, alpha / 2)), float(np.quantile(d, 1 - alpha / 2)))
+    out.update(ci95=[lo, hi], frac_boot_favouring_a=float((d > 0).mean()),
+               excludes_zero=bool(lo > 0 or hi < 0))
+    return out

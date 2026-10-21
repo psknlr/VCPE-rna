@@ -49,9 +49,40 @@ ridge_esm2
     residual profile. A linear map over the same inputs; the standard "is a
     linear baseline enough?" control.
 
+rff_ridge_esm2
+    Ridge over random Fourier features of the same ESM2 vectors, i.e. a generic
+    NON-LINEAR map, fitted in closed form. It exists because of what the project
+    is actually trying to establish. The head beat `ridge_esm2` by +0.027 on the
+    plain 150M table and tied it on the graph-augmented one, and the published
+    reading of that was "the head's non-linearity was substituting for
+    information the representation lacked". That reading has no control: between
+    "a linear map on these features" and "this architecture" there is a rung
+    missing, and without it any gap over ridge is attributed to the architecture
+    by default. This is the rung. If it matches the head, what the head has is
+    non-linearity, not architecture; if the head beats it, the architecture is
+    doing something a generic non-linear map on the same features cannot.
+
 Each returns a `[n_test, n_hvg]` prediction matrix.
+
+Hyperparameters
+---------------
+`ridge_esm2` ran at `alpha=1.0` and `knn_esm2` at `k=10` for every number this
+repository has published, chosen once and never selected, while the head's epoch
+is selected on an inner split and its lr / width / weight decay were tuned over
+many runs on this data. A control that was not allowed to fit its one knob is a
+weaker control than it looks, and the comparison it loses is not evidence about
+architectures.
+
+`select_control_hyperparams` fixes that with the discipline the head already has:
+every knob is chosen on the inner-validation slice alone, the full grid is
+returned so the choice is auditable, and the held-out set is never consulted. The
+defaults stay available and are still reported under the original names, because
+silently changing what `ridge_esm2` means between two tables is ERRATA E4's
+failure mode.
 """
 import numpy as np
+
+from eval_metrics import per_item_correlation
 
 
 def _l2_normalise(X, eps=1e-8):
@@ -146,6 +177,135 @@ def baseline_ridge_esm2(dev_tr, esm_tr, esm_te, mask_tr=None, alpha=1.0,
     return (pred + y_mu).astype(np.float32)
 
 
+def _median_sq_distance(X, rng, n_sample=512):
+    """Median squared pairwise distance -- the usual RBF bandwidth heuristic.
+
+    Taken on a subsample so the cost does not grow with the training set, and
+    floored away from zero so a degenerate table cannot produce gamma = inf.
+    """
+    n = len(X)
+    idx = rng.choice(n, size=min(n, n_sample), replace=False)
+    S = X[idx]
+    d2 = ((S[:, None, :] - S[None, :, :]) ** 2).sum(-1)
+    iu = np.triu_indices(len(S), k=1)
+    med = float(np.median(d2[iu])) if iu[0].size else 1.0
+    return max(med, 1e-8)
+
+
+def rff_features(X, W, b):
+    """Random Fourier feature map for the RBF kernel: sqrt(2/D) cos(Wx + b)."""
+    return np.sqrt(2.0 / W.shape[1]) * np.cos(np.asarray(X, dtype=np.float64) @ W + b)
+
+
+def make_rff(esm_dim, n_features=1024, gamma=1.0, seed=0):
+    """Draw the feature map. Deterministic given `seed`, so the control is too.
+
+    A control whose score moves when it is re-run cannot be compared against
+    anything (cf. ERRATA E14a, where GEARS's non-determinism at a fixed seed made
+    a single run meaningless). The draw is therefore seeded explicitly and the
+    seed travels in the report.
+    """
+    rng = np.random.default_rng(seed)
+    W = rng.normal(0.0, np.sqrt(2.0 * gamma), size=(esm_dim, n_features))
+    b = rng.uniform(0.0, 2.0 * np.pi, size=n_features)
+    return W, b
+
+
+def baseline_rff_ridge_esm2(dev_tr, esm_tr, esm_te, mask_tr=None, alpha=1.0,
+                            n_features=1024, gamma_mult=1.0, gamma=None, seed=0):
+    """Closed-form ridge over random Fourier features of the ESM2 vectors.
+
+    A generic non-linear map on exactly the features `ridge_esm2` and the head
+    see, with no gradient steps and no architecture. `gamma` defaults to
+    `gamma_mult / median_squared_distance`, the standard median heuristic, so the
+    bandwidth is set by the embedding's own scale rather than guessed.
+    """
+    X = np.asarray(esm_tr, dtype=np.float64)
+    Xte = np.asarray(esm_te, dtype=np.float64)
+    Y = np.asarray(dev_tr, dtype=np.float64)
+    if gamma is None:
+        med = _median_sq_distance(X, np.random.default_rng(seed + 101))
+        gamma = float(gamma_mult) / med
+    W, b = make_rff(X.shape[1], n_features=n_features, gamma=gamma, seed=seed)
+    Z, Zte = rff_features(X, W, b), rff_features(Xte, W, b)
+
+    z_mu, y_mu = Z.mean(axis=0, keepdims=True), Y.mean(axis=0, keepdims=True)
+    Z, Zte, Yc = Z - z_mu, Zte - z_mu, Y - y_mu
+    d, n = Z.shape[1], Z.shape[0]
+    if d <= n:
+        Wt = np.linalg.solve(Z.T @ Z + alpha * np.eye(d), Z.T @ Yc)
+        pred = Zte @ Wt
+    else:
+        A = np.linalg.solve(Z @ Z.T + alpha * np.eye(n), Yc)
+        pred = (Zte @ Z.T) @ A
+    return (pred + y_mu).astype(np.float32)
+
+
+def select_control_hyperparams(dev_fit, esm_fit, dev_val, esm_val,
+                               mask_fit=None, mask_val=None,
+                               ridge_alphas=(1e-2, 1e-1, 1.0, 1e1, 1e2, 1e3, 1e4),
+                               knn_ks=(1, 3, 5, 10, 20, 50),
+                               rff_alphas=(1e-1, 1.0, 1e1, 1e2),
+                               rff_gamma_mults=(0.25, 1.0, 4.0),
+                               rff_n_features=1024, seed=0):
+    """Choose each control's hyperparameters on the inner-validation slice only.
+
+    Fit on `*_fit` (the items the head's gradient sees), score on `*_val` (the
+    items that select the head's epoch), never touch the held-out set. That is
+    the same rule the head is held to, which is the whole point: a control that
+    is denied selection is not a fair comparator, and the repository's central
+    open question -- whether the architecture earns anything over a linear map on
+    the same features -- is decided by exactly this comparison.
+
+    Returns the chosen values and the full grids, so a reader can see whether the
+    choice sat on a plateau or on a spike, and whether it hit the edge of the
+    grid (which would mean the grid, not the data, picked it).
+    """
+    out = {"selected_on": "inner_val", "estimator": "per_item_correlation",
+           "n_fit_items": int(len(esm_fit)), "n_val_items": int(len(esm_val))}
+
+    def _score(pred):
+        v = per_item_correlation(dev_val, pred, mask_val)
+        return None if not np.isfinite(v) else float(v)
+
+    grids = {}
+    for name, values, fn in (
+        ("ridge_alpha", list(ridge_alphas),
+         lambda a: baseline_ridge_esm2(dev_fit, esm_fit, esm_val,
+                                       mask_tr=mask_fit, alpha=a)),
+        ("knn_k", list(knn_ks),
+         lambda k: baseline_knn_esm2(dev_fit, esm_fit, esm_val,
+                                     mask_tr=mask_fit, k=int(k))),
+    ):
+        scored = [(v, _score(fn(v))) for v in values]
+        grids[name] = [{"value": v, "inner_val": s} for v, s in scored]
+        ok = [(v, s) for v, s in scored if s is not None]
+        if ok:
+            best = max(ok, key=lambda t: t[1])
+            out[name] = best[0]
+            out[name + "_inner_val"] = best[1]
+            out[name + "_at_grid_edge"] = bool(best[0] in (values[0], values[-1]))
+
+    rff_scored = []
+    for a in rff_alphas:
+        for g in rff_gamma_mults:
+            s = _score(baseline_rff_ridge_esm2(
+                dev_fit, esm_fit, esm_val, mask_tr=mask_fit, alpha=a,
+                n_features=rff_n_features, gamma_mult=g, seed=seed))
+            rff_scored.append({"alpha": a, "gamma_mult": g, "inner_val": s})
+    grids["rff"] = rff_scored
+    ok = [r for r in rff_scored if r["inner_val"] is not None]
+    if ok:
+        best = max(ok, key=lambda r: r["inner_val"])
+        out["rff_alpha"] = best["alpha"]
+        out["rff_gamma_mult"] = best["gamma_mult"]
+        out["rff_inner_val"] = best["inner_val"]
+        out["rff_n_features"] = int(rff_n_features)
+        out["rff_seed"] = int(seed)
+    out["grids"] = grids
+    return out
+
+
 def baseline_neighbor_prior(dev_tr, esm_tr, esm_te, mask_tr=None,
                             is_nb_tr=None, is_nb_te=None):
     """Graph-only control: the train mean, plus one parameter for "is a STRING partner".
@@ -202,12 +362,28 @@ REGISTRY = {
     "knn_esm2": baseline_knn_esm2,
     "ridge_esm2": baseline_ridge_esm2,
     "neighbor_prior": baseline_neighbor_prior,
+    # The `_sel` rows are the same estimators with their one knob chosen on the
+    # inner-validation slice. They are separate names rather than new defaults so
+    # that `ridge_esm2` means in this table what it meant in the last one.
+    "ridge_esm2_sel": baseline_ridge_esm2,
+    "knn_esm2_sel": baseline_knn_esm2,
+    "rff_ridge_esm2_sel": baseline_rff_ridge_esm2,
 }
 
+# Which default each un-selected control runs at. Quoting a control without its
+# hyperparameter is the same error as quoting a score without its estimator.
+DEFAULTS = {"ridge_esm2": {"alpha": 1.0}, "knn_esm2": {"k": 10}}
 
-def run_all(dev_tr, esm_tr, esm_te, mask_tr=None, which=None, **kw):
-    """Return {name: prediction matrix} for the requested baselines."""
-    names = which or list(REGISTRY)
+
+def run_all(dev_tr, esm_tr, esm_te, mask_tr=None, which=None, selected=None, **kw):
+    """Return {name: prediction matrix} for the requested baselines.
+
+    `selected` is the output of `select_control_hyperparams`. The `*_sel` rows
+    need it and are skipped without it, rather than silently falling back to the
+    defaults and reporting them twice under two names.
+    """
+    names = which or [n for n in REGISTRY if not n.endswith("_sel")]
+    sel = selected or {}
     out = {}
     for n in names:
         fn = REGISTRY[n]
@@ -220,6 +396,21 @@ def run_all(dev_tr, esm_tr, esm_te, mask_tr=None, which=None, **kw):
         elif n == "neighbor_prior":
             out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr,
                         is_nb_tr=kw.get("is_nb_tr"), is_nb_te=kw.get("is_nb_te"))
+        elif n == "ridge_esm2_sel":
+            if "ridge_alpha" in sel:
+                out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr,
+                            alpha=sel["ridge_alpha"])
+        elif n == "knn_esm2_sel":
+            if "knn_k" in sel:
+                out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr,
+                            k=int(sel["knn_k"]))
+        elif n == "rff_ridge_esm2_sel":
+            if "rff_alpha" in sel:
+                out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr,
+                            alpha=sel["rff_alpha"],
+                            gamma_mult=sel["rff_gamma_mult"],
+                            n_features=sel.get("rff_n_features", 1024),
+                            seed=sel.get("rff_seed", 0))
         else:
             out[n] = fn(dev_tr, esm_tr, esm_te, mask_tr=mask_tr)
     return out

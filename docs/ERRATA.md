@@ -600,6 +600,202 @@ be measured rather than asserted.
 **Status.** Fixed; default changed. The effect on the reported score is measured
 with the real table, not with the placeholder used for the wiring check above.
 
+## E16 — The inner-validation slice was also used as training data
+
+**Defect.** `--inner_val_frac` was added to fix E3 by carving a selection slice
+out of the training items, and `evaluate(..., "inner_val", ...)` scored it each
+epoch. But the training loop went on drawing its batches from **every** training
+item:
+
+```python
+n = len(rows_tr)                      # ALL training items
+for epoch in range(args.epochs):
+    perm = torch.randperm(n)          # including the inner-validation ones
+```
+
+`src/maprna_p3/train_p3.py` (pre-fix): `is_inner_val` appeared in `evaluate` and
+nowhere in the loop that computed the gradient. So the slice that chose the epoch
+was data the model had fitted.
+
+Two consequences, neither visible in a result file:
+
+1. **The selection curve was a training curve.** It rises for as long as the
+   budget lasts, so "selection" returns whatever epoch the run ended on. That is
+   exactly the pattern recorded in RESULTS_REAL.md and read there as a property
+   of the model: epochs 28/30, 26/30, 26/30 at a 30-epoch budget; 78/80, 77/80,
+   78/80 at 80; **150 of 150** at 150, described as "still improving when the run
+   ends". A real validation curve can turn over. This one could not.
+2. **The head was fitted on ~18% more items than the models it was compared
+   with.** `baseline_common.inner_split_items` hands an external baseline the
+   inner-**train** items — correctly, so GEARS and CPA can early-stop on the
+   inner-val slice — and its docstring says it returns the lists "matching what
+   train_p3 trains and scores on". It did not match. Table D's fairness block
+   lists several asymmetries; this one was not among them, and it ran the other
+   way.
+
+The cheap controls were affected in the same direction: `run_all` was handed
+`dev_tr` and `rows_tr` whole, so ridge and k-NN were fitted on the full training
+set as well.
+
+**Fix.** The gradient set is the complement of the selection slice, and the
+controls are fitted on that same set, so every row of the results table has seen
+the same items. The disjointness is asserted at runtime rather than promised in a
+comment, and `final_report.json` now carries `n_fit_items`,
+`n_inner_val_items`, `trained_on_inner_val` and a `footing` sentence, so a number
+states which rule produced it. `run_seeds.py` refuses to average seeds run under
+different fit rules. `--train_on_inner_val` restores the old behaviour, so the
+size of the effect can be measured by flipping one flag — the same treatment as
+`--no_mask` for E6 and `--hvg_from all` for E15.
+
+A related reporting field falls out of it: `selection_hit_budget` records whether
+the selected epoch *is* the budget. RESULTS_REAL.md had to say that in prose
+three times; it is now a boolean in every report and a line in every seed
+summary.
+
+**Verification.** The end-to-end accounting is asserted on synthetic data
+(`tests/test_pipeline_smoke.py`): `n_fit_items == n_train_items -
+n_inner_val_items`, every control reports the same `fit_items`, and the flag
+flips it back. The structural guards are in `tests/test_inner_val_is_held_out.py`
+— the batch permutation must index the fit set, the fit set must be derived as
+the complement of `is_inner_val`, the disjointness assertion must exist, and the
+old rule must stay opt-in.
+
+**What this does to the numbers is not yet measured, and the direction is not
+obvious.** Stated in advance, before the re-run, so it can be wrong in public:
+
+* The selected epoch should stop pinning to the budget in long runs. If epochs
+  still come back as 150/150 with the slice genuinely held out, the model really
+  is undertrained and the earlier reading was right for the wrong reason.
+* Every method loses ~15% of its fitting data, so all the absolute numbers in
+  RESULTS_REAL.md Table A should fall a little. The **paired** head-vs-ridge
+  difference is the quantity at issue and it can move either way: the head loses
+  training items (hurts it) but gains an epoch choice that is no longer made on
+  fitted data (could help it, if it was previously selecting overfit epochs).
+* Table D's GEARS and CPA numbers do not change at all. What changes is that the
+  footing claim made around them becomes true.
+
+**Status.** Fixed; default changed. Every response-line number in
+RESULTS_REAL.md was produced under the old rule and is marked as such there. They
+are not withdrawn — the test split was scored once, after selection, and nothing
+reported was selected on it — but they were measured with 85% of the items used
+for selection also used for fitting, and the head-vs-ridge comparison they rest
+on was not run on an identical footing. Re-running them is the first item under
+Outstanding.
+
+## E18 — The controls were never allowed to fit their one knob, and the non-linearity rung was missing
+
+**Defect.** Three things, which together decide the central comparison this
+project makes.
+
+1. **No selection for the controls.** `ridge_esm2` ran at `alpha=1.0` and
+   `knn_esm2` at `k=10` for every number this repository has published. Neither
+   was ever selected on anything. The head, meanwhile, gets its epoch chosen on
+   an inner split, and its lr / width / weight decay were "tuned on this data
+   over many runs" (stated in `baseline_gears.py` as a fairness caveat against
+   GEARS — the same caveat applies against ridge and was not drawn). A control
+   denied its one hyperparameter is a weaker control than it looks, and the
+   comparisons that rest on it are:
+
+   * "the head beats `ridge_esm2` by +0.027 on ESM2-150M, every seed"
+   * "ridge gains twice what the head does on the graph table (+0.072 vs
+     +0.036)", hence "the head's edge existed only while the features were
+     impoverished"
+
+   The second is a comparison of two gains, both of which depend on a penalty
+   that was never fitted — and `alpha=1.0` on a 1280-dimensional feature table is
+   not the same regularisation as `alpha=1.0` on a 640-dimensional one.
+
+2. **A missing rung.** The published reading of the head's margin is that "its
+   non-linearity was substituting for information the representation lacked".
+   Between "a linear map on these features" and "this architecture" there is a
+   step that was never run: a *generic* non-linear map on the same features. With
+   no such row, any margin over ridge is attributed to the architecture by
+   default, which is the thing the margin was supposed to establish.
+
+3. **No power.** Every comparison is settled by a normal approximation over 3 or
+   5 seeds. At n=3 the interval is wide almost regardless of the data: the
+   reported head-vs-ridge CI of [-0.031, +0.026] is consistent with a real effect
+   of either sign, so "tie" has been doing double duty for "no difference" and
+   "not enough seeds to tell". The held-out set has ~350 perturbations and that
+   sample was never used for an interval.
+
+**Fix.**
+
+* `select_control_hyperparams` chooses ridge's `alpha`, k-NN's `k` and the new
+  control's `alpha`/bandwidth **on the inner-validation slice alone** — the same
+  rule the head's epoch obeys — fitting on the same items the head's gradient
+  sees. The full grid is in the report, with an `*_at_grid_edge` flag, because a
+  value chosen at the edge of a grid was chosen by the grid and not by the data.
+* The selected variants are **new rows** (`ridge_esm2_sel`, `knn_esm2_sel`), and
+  the fixed-default rows keep their names and values. Silently changing what
+  `ridge_esm2` means between two tables is E4 with a different knob.
+* `rff_ridge_esm2_sel` is the missing rung: ridge over random Fourier features of
+  the same ESM2 vectors — a generic non-linear map, closed-form, deterministic
+  given its seed, no architecture. The run prints the three numbers side by side
+  and states the reading: a margin over the linear map is architecture only if it
+  also exceeds this row.
+* `paired_bootstrap_per_item` resamples the held-out perturbations, paired, and
+  every control row carries one. It is exact against the naive loop (pinned by a
+  test) and ~150x faster, which is why it can be on every row rather than in a
+  one-off analysis. It states in its own output what it does **not** cover: the
+  split. `run_seeds.py` answers that, and on this data it is the harder question
+  — ridge's own score moved 0.039 between splits.
+* Secondary metrics with their chance levels travel with each row: per-item
+  Spearman (0.0), top-5% enrichment scaled so chance is 1.0 (E2's divisor, fixed
+  once in the shared module), and direction agreement on each item's largest
+  responses (0.5). A model can correlate well and still have the sign wrong on
+  the genes with the largest effects, which is what a user of a knockdown
+  prediction acts on.
+
+**Stated in advance, before the re-run.** Selecting `alpha` can only raise
+ridge's inner-validation score, and on this data it should mostly transfer, so
+**the head's +0.027 margin on the plain 150M table should shrink** — possibly to
+nothing. On the graph table, where the head and ridge were tied, the direction is
+unclear: both read the same features and only ridge gains a fitted penalty. If
+`rff_ridge_esm2_sel` lands at or above the head, the remaining case for the
+architecture is gone; if the head stays above it, there is something the
+architecture does that a generic non-linear map on the same features does not,
+which would be the first positive architectural result this project has.
+
+**One asymmetry remains, and it now favours the head.** Its hyperparameters came
+from many historical runs, several made under a protocol that peeked at the test
+split (E3); the controls get a small declared grid on inner validation. That is
+not equal treatment, it is just no longer the reverse.
+
+**Status.** Implemented and tested; the real-data re-run is pending, together
+with E16's. Every head-vs-ridge statement in RESULTS_REAL.md should be read as
+"against an unfitted ridge" until then.
+
+## E17 — The metric-regression CI job has never once run
+
+**Defect.** `.github/workflows/tests.yml` defines a `metrics` job whose stated
+purpose is to "pin the evaluation defects recorded in docs/ERRATA.md so that
+those cannot silently return". It installs `numpy scipy pytest` — deliberately
+torch-free, for speed — and runs `python -m pytest tests/ -q`.
+
+Four tests import torch at collection time (`test_hvg_selection.py` and
+`test_baseline_gears.py` at module scope; one test each in
+`test_baseline_cpa.py` and `test_sweep_discipline.py` by running a script as a
+subprocess). A collection error is not a skip: pytest aborts the whole run. So
+the job failed in under a second on every push, and the guard against the errata
+returning was never evaluated.
+
+Both runs on `main` show it: the `metrics` job red, `syntax` and `pipeline`
+green ([run 51](https://github.com/psknlr/VCPE-rna/actions/runs/36815478044),
+[run 48](https://github.com/psknlr/VCPE-rna/actions/runs/36802100913)). A red
+check beside two green ones is easy to read as flakiness, which is how it
+survived two merges.
+
+**Fix.** The four tests skip cleanly when torch is absent
+(`pytest.importorskip` at the top of the two modules, a `skipif` mark on the two
+subprocess tests), so the collection error cannot take the run down. The torch
+job still exercises them. `python -m pytest tests/ -q` with numpy, scipy and
+pytest alone now collects and passes the whole suite.
+
+**Status.** Fixed. Worth recording rather than quietly repairing, because the
+failure mode is the one this document is about: a check that exists, is
+documented, is believed to be protecting something, and is not running.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically
@@ -625,6 +821,25 @@ See [REPRODUCE.md](REPRODUCE.md) for how to regenerate every number under the co
 baselines and the per-axis ablation table.
 
 ## Outstanding
+
+**New first item: re-run the response line with the selection slice held out of
+the gradient (E16).** Every number in RESULTS_REAL.md was produced with the
+inner-validation items also used for fitting, so the epoch was selected on
+fitted data and the head was fitted on ~18% more items than GEARS and CPA. The
+code is fixed and the accounting is asserted; what is missing is the re-run.
+Three seeds at the 80-epoch budget reproduces Table A and the graph-feature
+comparison on the corrected footing, and the predictions this re-run can falsify
+are written down under E16 above. The same re-run also answers E18: the controls
+now get their knob selected on inner validation, and a generic non-linear map on
+the same features is scored beside them.
+
+**The host is no longer the obstacle.** The declared 150-epoch run died twice to
+container restarts and no seed finished; `--resume` with `--stop_after_epochs`
+now completes a declared budget in slices, and a chunked run is identical to an
+uninterrupted one to the last digit (asserted in
+`tests/test_pipeline_smoke.py`). The budget cannot change on a resume and an
+incomplete run writes no report, so neither the convenience nor the slicing can
+turn into a quietly extended budget. See REPRODUCE.md §2.2b.
 
 **Update: the first real-data runs are done.** The two items that most
 constrained every claim -- "no number regenerated" and "no external model run"

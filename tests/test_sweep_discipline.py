@@ -7,9 +7,12 @@ the number is a maximum over designs rather than an estimate. The guard cannot b
 promise in a docstring, because the next person to edit the file will not read it.
 """
 import ast
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "sweep_graph_features.py"
@@ -66,6 +69,8 @@ def test_it_labels_its_winner_a_candidate_not_a_result():
     assert "train_p3" in src, "it must point at the script that scores held-out once"
 
 
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None,
+                    reason="runs the sweep script, which imports torch")
 def test_the_help_text_states_the_discipline():
     p = subprocess.run([sys.executable, str(SCRIPT), "--help"],
                        capture_output=True, text=True, timeout=120)

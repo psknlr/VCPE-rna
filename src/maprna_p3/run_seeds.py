@@ -124,7 +124,40 @@ def main():
                       for n in base_names},
         "selected_epochs": [reports[s].get("selected_epoch") for s in seeds],
         "split_by": sorted({str(reports[s].get("split_by")) for s in seeds}),
+        # How many seeds stopped because the budget ran out rather than because
+        # the inner-validation curve turned over. A mean over seeds that all hit
+        # their budget is a floor under that budget, not a converged estimate,
+        # and that has to travel with the mean rather than be noticed by a reader
+        # comparing `selected_epochs` against `epochs` by hand.
+        "seeds_that_hit_the_epoch_budget": [
+            s for s in seeds if reports[s].get("selection_hit_budget")],
     }
+
+    # Secondary metrics across seeds, for the model and every control. They are
+    # aggregated here rather than left in the per-seed files because a reader
+    # comparing a single seed's direction agreement against another single seed's
+    # is comparing two splits, and on this data the split is the larger source of
+    # variation.
+    SECONDARY = ("spearman_dev", "enrichment_top5pct_dev",
+                 "direction_agreement_top10pct_dev")
+    summary["secondary"] = {
+        "model": {k: summarise([reports[s].get(k) for s in seeds], k)
+                  for k in SECONDARY},
+        "baselines": {
+            n: {k: summarise([reports[s].get("baselines", {}).get(n, {}).get(k)
+                              for s in seeds], k) for k in SECONDARY}
+            for n in base_names},
+        "chance_levels": {"spearman_dev": 0.0, "enrichment_top5pct_dev": 1.0,
+                          "direction_agreement_top10pct_dev": 0.5},
+    }
+
+    # Which hyperparameters each control was given, per seed. A selected knob can
+    # land on a different value on every split, and a table that quotes one value
+    # for a three-seed mean is quoting a hyperparameter that was not used.
+    summary["control_hyperparameters_per_seed"] = {
+        n: [reports[s].get("baselines", {}).get(n, {}).get("hyperparameters")
+            for s in seeds]
+        for n in base_names}
 
     # One canonical statement of the protocol, taken from the seed reports'
     # own provenance rather than re-derived from this script's passthrough
@@ -133,7 +166,11 @@ def main():
     # how a producer and a consumer come to disagree (ERRATA E11).
     PROTOCOL_KEYS = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
                      "min_cells", "epochs", "inner_val_frac", "esm_table",
-                     "use_mask", "knn_k", "d_model")
+                     "use_mask", "knn_k", "d_model", "train_on_inner_val",
+                     # what the controls ran at. `ridge_esm2` at two different
+                     # alphas is two different controls, and averaging them would
+                     # be E4's failure mode applied to a baseline row.
+                     "ridge_alpha", "no_control_selection", "rff_features")
     proto, disagree = {}, {}
     for k in PROTOCOL_KEYS:
         vals = {s: (reports[s].get("provenance", {}).get("args", {}) or {}).get(k)
@@ -207,6 +244,13 @@ def main():
               f"that never beats retrieval or a linear map over the same "
               f"embeddings has not been shown to learn perturbation biology.",
               flush=True)
+    hit = summary["seeds_that_hit_the_epoch_budget"]
+    if hit:
+        print(f"\nNOTE: seeds {hit} selected their FINAL epoch, so the budget "
+              f"ended those runs rather than the inner-validation curve turning "
+              f"over. This mean is a floor under that budget. Extending the "
+              f"budget until a favoured model wins is the abuse to avoid: "
+              f"declare the new budget before running it.", flush=True)
 
     out = args.summary_json or os.path.join(args.out_dir, "seed_summary.json")
     write_json(out, summary, args=args)
