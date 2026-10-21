@@ -421,6 +421,98 @@ def test_the_report_says_whether_the_budget_ended_the_run(trained):
     assert rep["selection_hit_budget"] == (rep["selected_epoch"] >= 4)
 
 
+def _resume_common(synth, out, epochs):
+    return ["src/maprna_p3/train_p3.py",
+            "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+            "--esm_table", str(synth / "esm.pt"), "--out_dir", str(out),
+            "--epochs", str(epochs), "--n_hvg", "40", "--batch_size", "8",
+            "--split_by", "target_gene", "--rff_features", "128",
+            "--n_boot_items", "200"]
+
+
+def test_a_chunked_resumed_run_equals_an_uninterrupted_one(synth):
+    """The declared 150-epoch run in RESULTS_REAL.md was never completed: this
+    container restarted twice mid-run and no seed finished, so the comparison
+    that would settle head-vs-ridge is still missing. Resume only helps if a
+    resumed run IS the interrupted run -- otherwise it is a different experiment
+    wearing the same budget. Checked here by running 8 epochs straight through
+    and 3+3+2 with two stops, and requiring the reports to be identical.
+    """
+    full, chunk = synth / "res_full", synth / "res_chunk"
+    _run(_resume_common(synth, full, 8))
+    for _ in range(2):
+        log = _run(_resume_common(synth, chunk, 8)
+                   + ["--resume", "--stop_after_epochs", "3"])
+        assert "STOPPED at" in log
+    log = _run(_resume_common(synth, chunk, 8) + ["--resume"])
+    assert "[resume] continuing at epoch 7/8" in log
+
+    a = json.loads((full / "final_report.json").read_text())
+    b = json.loads((chunk / "final_report.json").read_text())
+    a.pop("provenance", None), b.pop("provenance", None)
+    assert a == b, "a resumed run must be the run it resumed, to the last digit"
+
+    def losses(p):
+        out = []
+        for line in p.read_text().splitlines():
+            r = json.loads(line)
+            if "epoch" in r and "train_loss" in r:
+                out.append((r["epoch"], r["train_loss"]))
+        return out
+    assert losses(full / "train_log.jsonl") == losses(chunk / "train_log.jsonl"), \
+        "the per-epoch training losses must match, or the RNG stream was not restored"
+
+
+def test_an_incomplete_run_writes_no_result(synth):
+    """A number from a partial budget is not a result, so there must be nothing
+    for anyone to quote."""
+    out = synth / "res_partial"
+    _run(_resume_common(synth, out, 6) + ["--resume", "--stop_after_epochs", "2"])
+    assert (out / "resume_state.pt").exists()
+    assert not (out / "final_report.json").exists(), \
+        "a partial budget must not leave a final report behind"
+    rec = [json.loads(l) for l in (out / "train_log.jsonl").read_text().splitlines()]
+    assert any(r.get("stopped_early") for r in rec), \
+        "the log must record that the run was incomplete"
+
+
+def test_resuming_cannot_change_the_declared_budget(synth):
+    """"Extend the budget until the favoured model wins" is the abuse
+    RESULTS_REAL.md names. A resume that accepts a larger --epochs is how that
+    happens by accident."""
+    out = synth / "res_budget"
+    _run(_resume_common(synth, out, 6) + ["--resume", "--stop_after_epochs", "2"])
+    p = subprocess.run([sys.executable] + _resume_common(synth, out, 12)
+                       + ["--resume"], cwd=ROOT, capture_output=True, text=True,
+                       timeout=900)
+    assert p.returncode != 0
+    assert "not a budget change" in (p.stdout + p.stderr)
+
+
+def test_resuming_into_a_different_experiment_is_refused(synth):
+    """Same out_dir, different panel: the stored split no longer describes this
+    run, and splicing them would put two experiments in one number."""
+    out = synth / "res_fingerprint"
+    _run(_resume_common(synth, out, 6) + ["--resume", "--stop_after_epochs", "2"])
+    args = _resume_common(synth, out, 6)
+    args[args.index("--n_hvg") + 1] = "30"          # a different gene panel
+    p = subprocess.run([sys.executable] + args + ["--resume"], cwd=ROOT,
+                       capture_output=True, text=True, timeout=900)
+    assert p.returncode != 0
+    assert "different experiment" in (p.stdout + p.stderr)
+
+
+def test_stopping_early_without_resume_is_refused(synth):
+    """Without a state file the epochs run in this invocation are lost, not
+    continued, which would silently turn a declared budget into a short one."""
+    p = subprocess.run(
+        [sys.executable] + _resume_common(synth, synth / "res_nostate", 6)
+        + ["--stop_after_epochs", "2"], cwd=ROOT, capture_output=True,
+        text=True, timeout=900)
+    assert p.returncode != 0
+    assert "needs --resume" in (p.stdout + p.stderr)
+
+
 def test_a_rerun_marks_the_log_boundary_instead_of_silently_concatenating(synth):
     """Found while resuming a killed run: train_log.jsonl is append-only, so a
     re-run into an existing out_dir left a log reading epochs 1..74 then 1..80

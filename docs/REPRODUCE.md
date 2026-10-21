@@ -245,6 +245,43 @@ knockdown prediction acts on, and it is not implied by a correlation: a model ca
 correlate well and still have the sign wrong on the genes with the largest
 effects.
 
+### 2.2b Completing a declared budget on a host that cannot hold the run
+
+The pre-declared 150-epoch × 3-seed comparison — the run that would settle
+head-vs-ridge — has never been completed. It needs about 3.3 hours and the
+container restarted twice mid-run; no seed finished, twice. A restart used to
+cost the whole run.
+
+```bash
+# declare the budget once, then run it in whatever slices the host allows
+CMD="python src/maprna_p3/train_p3.py --out_dir runs/p3_150 --epochs 150 \
+     --data_dirs ... --esm_table ... --split_by target_gene --resume"
+$CMD --stop_after_epochs 40      # epochs   1- 40, saves state, exits
+$CMD --stop_after_epochs 40      # epochs  41- 80
+$CMD --stop_after_epochs 40      # epochs  81-120
+$CMD                             # epochs 121-150, then scores held-out once
+```
+
+Three properties make this a continuation rather than a new experiment, and they
+are what the flag is worth:
+
+* **A resumed run is the interrupted run, to the last digit.** Optimizer,
+  scheduler and both RNG states are restored, so the per-epoch training losses,
+  the selected epoch and every held-out number are identical to an uninterrupted
+  run. `tests/test_pipeline_smoke.py` asserts that by running 8 epochs straight
+  through and 3+3+2 with two stops and requiring the two reports to be equal.
+* **The budget cannot change on a resume.** `--epochs 150` resumed as
+  `--epochs 200` is refused. Extending a budget until the favoured model wins is
+  the abuse this document warns about; a longer run is a new run, in a new
+  `--out_dir`, with its own declaration.
+* **An incomplete run writes no `final_report.json`.** A number from a partial
+  budget is not a result, so there is nothing to quote. The log records
+  `stopped_early` instead.
+
+The stored state also refuses to resume into a different experiment: the data
+fingerprint covers the gene panel, the split, the inner-validation mask and the
+gradient set, not just the flags that produced them.
+
 ### 2.3 Multiple seeds — required before quoting anything
 
 ```bash

@@ -829,9 +829,17 @@ fitted data and the head was fitted on ~18% more items than GEARS and CPA. The
 code is fixed and the accounting is asserted; what is missing is the re-run.
 Three seeds at the 80-epoch budget reproduces Table A and the graph-feature
 comparison on the corrected footing, and the predictions this re-run can falsify
-are written down under E16 above. It needs a host that can hold a 3.3-hour run —
-the declared 150-epoch run died twice to container restarts, which is why
-`--resume` matters more than it looks.
+are written down under E16 above. The same re-run also answers E18: the controls
+now get their knob selected on inner validation, and a generic non-linear map on
+the same features is scored beside them.
+
+**The host is no longer the obstacle.** The declared 150-epoch run died twice to
+container restarts and no seed finished; `--resume` with `--stop_after_epochs`
+now completes a declared budget in slices, and a chunked run is identical to an
+uninterrupted one to the last digit (asserted in
+`tests/test_pipeline_smoke.py`). The budget cannot change on a resume and an
+incomplete run writes no report, so neither the convenience nor the slicing can
+turn into a quietly extended budget. See REPRODUCE.md §2.2b.
 
 **Update: the first real-data runs are done.** The two items that most
 constrained every claim -- "no number regenerated" and "no external model run"

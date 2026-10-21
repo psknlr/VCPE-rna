@@ -406,6 +406,15 @@ about 3.3 hours and the container hosting this session restarted twice mid-run; 
 seed finished. Resuming after an infrastructure failure is not a budget change, so
 it was restarted unchanged, and it died again.
 
+> **The obstacle was the lack of a resume, and that is now fixed.** `--resume`
+> with `--stop_after_epochs` completes a declared budget in slices the host can
+> hold, and a chunked run is identical to an uninterrupted one to the last digit
+> — optimizer, scheduler and both RNG states are restored, and the per-epoch
+> losses match (asserted in `tests/test_pipeline_smoke.py`). The budget cannot
+> change on a resume, and an incomplete run writes no report, so slicing cannot
+> become a quietly extended budget. See REPRODUCE.md §2.2b. The declared run has
+> still not been *run*; what changed is that a restart no longer costs it.
+
 What is reported instead is a **single-seed convergence probe** at 150 epochs,
 labelled as such. It is explicitly **not** the declared three-seed paired
 comparison. It answered its question, and then turned up something more useful

@@ -26,6 +26,7 @@ If conditioning is alive, ablation_r drops well below 1.
 No SE / flash-attention / MAP repo / env vars required. Runs in minutes.
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -49,6 +50,82 @@ from eval_metrics import (  # noqa: E402
     direction_agreement, enrichment_factor, paired_bootstrap_per_item,
     per_item_correlation, per_item_correlation_detail, per_item_spearman,
     pooled_correlation, top_k_overlap)
+
+
+RESUME_FILE = "resume_state.pt"
+
+# The protocol fields a resumed run must agree with the interrupted one about.
+# Resuming into a different experiment would splice two runs into one number,
+# which is the traceability failure of ERRATA E11 with a longer fuse.
+RESUME_FINGERPRINT_ARGS = (
+    "data_dirs", "esm_table", "string_neighbors", "rna_encoder_ckpt", "n_hvg",
+    "hvg_from", "split_by", "test_frac", "min_cells", "seed", "inner_val_frac",
+    "train_on_inner_val", "use_mask", "batch_size", "lr", "weight_decay",
+    "d_model", "epochs")
+
+
+def resume_fingerprint(args, data, fit_pos):
+    """What must match for a resumed run to be the same run.
+
+    Includes the derived split, not only the arguments that produced it: an
+    ingest script or a data file could change underneath an interrupted run and
+    rebuild a different split from identical flags.
+    """
+    def _h(a):
+        return hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest()[:16]
+    fp = {k: getattr(args, k, None) for k in RESUME_FINGERPRINT_ARGS}
+    fp["hvg_rows"] = _h(np.asarray(data["hvg_rows"], dtype=np.int64))
+    fp["rows_tr"] = _h(np.asarray(data["rows_tr"], dtype=np.int64))
+    fp["rows_te"] = _h(np.asarray(data["rows_te"], dtype=np.int64))
+    fp["is_inner_val"] = _h(np.asarray(data["is_inner_val"], dtype=np.int8))
+    fp["fit_pos"] = _h(np.asarray(fit_pos, dtype=np.int64))
+    return fp
+
+
+def save_resume_state(path, *, epochs_done, args, model, opt, sched, best_pd,
+                      best_epoch, fingerprint):
+    """Write the state atomically: a torn state file is worse than none.
+
+    The RNG states go in too, so a resumed run continues the same stream rather
+    than starting a statistically different one at the same epoch number.
+    """
+    state = dict(
+        epochs_done=int(epochs_done), epochs_budget=int(args.epochs),
+        best_pd=float(best_pd), best_epoch=int(best_epoch),
+        fingerprint=fingerprint,
+        model_state_dict=model.state_dict(), optimizer=opt.state_dict(),
+        scheduler=sched.state_dict(),
+        torch_rng=torch.get_rng_state(), numpy_rng=np.random.get_state(),
+        provenance=stamp(args=args))
+    tmp = path + ".tmp"
+    torch.save(state, tmp)
+    os.replace(tmp, path)
+
+
+def load_resume_state(path, args, fingerprint):
+    """Load and verify. A mismatch refuses rather than resuming into another run.
+
+    The budget is part of the fingerprint on purpose. Resuming after an
+    infrastructure failure is not a budget change -- and `--epochs 150` resumed
+    as `--epochs 200` is how a declared budget quietly becomes "extend until the
+    favoured model wins", which RESULTS_REAL.md names as the abuse to avoid.
+    """
+    st = torch.load(path, map_location="cpu", weights_only=False)
+    if st.get("epochs_budget") != args.epochs:
+        raise SystemExit(
+            f"this run was declared at {st.get('epochs_budget')} epochs and you "
+            f"passed --epochs {args.epochs}. Resuming is not a budget change: "
+            f"re-declare the budget in a new --out_dir, so the longer run is a "
+            f"new run with its own record.")
+    old, new = st.get("fingerprint", {}), fingerprint
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    if diff:
+        raise SystemExit(
+            "the state in this --out_dir belongs to a different experiment, so "
+            "resuming it would splice two runs into one number. Differences "
+            f"(stored, now): {diff}")
+    return st
 
 
 def _control_hyperparameters(name, args, selected):
@@ -170,6 +247,23 @@ def parse_args():
     p.add_argument("--n_boot_items", type=int, default=2000,
                    help="bootstrap replicates for the paired item-level interval "
                         "against each control. 0 disables it.")
+    p.add_argument("--resume", action="store_true", default=False,
+                   help="write a resume state after every epoch and continue from "
+                        "it if one is already in --out_dir. The pre-declared "
+                        "150-epoch run in RESULTS_REAL.md was never completed "
+                        "because this container restarted twice mid-run, and "
+                        "without this a restart costs the whole run. The stored "
+                        "budget, the split and the data fingerprint must match, "
+                        "so a resume cannot silently become a different "
+                        "experiment or a longer budget.")
+    p.add_argument("--stop_after_epochs", type=int, default=0,
+                   help="run at most this many epochs in THIS invocation, then "
+                        "save the resume state and exit without scoring the "
+                        "held-out set. Requires --resume. It is how a declared "
+                        "budget is completed on a host that cannot hold the whole "
+                        "run: the same command, run again, continues where it "
+                        "stopped. An incomplete run writes no final report, so a "
+                        "partial budget cannot be quoted as a result.")
     p.add_argument("--hvg_from", choices=("train", "all"), default="train",
                    help="which perturbations the response panel is ranked on. train "
                         "(default) is correct. all reproduces the earlier behaviour, "
@@ -652,7 +746,34 @@ def main():
     best_pd, best_epoch = -float('inf'), -1
     ckpt_path = os.path.join(args.out_dir, 'ckpt_p3_best_dev.pt')
     n = len(fit_pos_t)
-    for epoch in range(args.epochs):
+
+    # ---- resume ----
+    resume_path = os.path.join(args.out_dir, RESUME_FILE)
+    fingerprint = resume_fingerprint(args, data, fit_pos)
+    start_epoch = 0
+    if args.stop_after_epochs and not args.resume:
+        raise SystemExit("--stop_after_epochs needs --resume, or the epochs run "
+                         "in this invocation would be lost rather than continued")
+    if args.resume and os.path.exists(resume_path):
+        st = load_resume_state(resume_path, args, fingerprint)
+        model.load_state_dict(st["model_state_dict"])
+        opt.load_state_dict(st["optimizer"])
+        sched.load_state_dict(st["scheduler"])
+        torch.set_rng_state(st["torch_rng"])
+        np.random.set_state(st["numpy_rng"])
+        start_epoch = int(st["epochs_done"])
+        best_pd, best_epoch = float(st["best_pd"]), int(st["best_epoch"])
+        print(f"[resume] continuing at epoch {start_epoch + 1}/{args.epochs}; "
+              f"best inner-val so far {best_pd:.4f} at ep{best_epoch}. The RNG "
+              f"states were restored, so this continues the interrupted run "
+              f"rather than starting a statistically different one.", flush=True)
+    elif args.resume:
+        print(f"[resume] no state in {args.out_dir}; starting fresh and saving "
+              f"state after every epoch", flush=True)
+
+    stop_at = (min(args.epochs, start_epoch + args.stop_after_epochs)
+               if args.stop_after_epochs else args.epochs)
+    for epoch in range(start_epoch, stop_at):
         model.train()
         t0, run = time.time(), []
         perm = fit_pos_t[torch.randperm(n)]
@@ -733,6 +854,24 @@ def main():
                        ckpt_path)
             print(f"saved best inner-val ckpt (pearson_dev={best_pd:.4f}, "
                   f"ep{epoch + 1})", flush=True)
+        if args.resume:
+            save_resume_state(resume_path, epochs_done=epoch + 1, args=args,
+                              model=model, opt=opt, sched=sched, best_pd=best_pd,
+                              best_epoch=best_epoch, fingerprint=fingerprint)
+
+    if stop_at < args.epochs:
+        # No final report: a partial budget must not be quotable as a result.
+        print(f"\nSTOPPED at {stop_at}/{args.epochs} epochs as asked. The "
+              f"held-out set was NOT scored and no final_report.json was "
+              f"written, because a number from a partial budget is not a result. "
+              f"Run the same command again to continue from epoch {stop_at + 1}.",
+              flush=True)
+        with open(log_path, "a") as f:
+            f.write(json.dumps(dict(
+                stopped_early=True, epochs_done=stop_at,
+                epochs_budget=args.epochs,
+                note="incomplete run; no held-out scoring")) + "\n")
+        return
 
     # ---- single, final scoring of the held-out split, at the selected epoch ----
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
