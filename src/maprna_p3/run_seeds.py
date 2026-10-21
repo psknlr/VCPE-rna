@@ -124,6 +124,13 @@ def main():
                       for n in base_names},
         "selected_epochs": [reports[s].get("selected_epoch") for s in seeds],
         "split_by": sorted({str(reports[s].get("split_by")) for s in seeds}),
+        # How many seeds stopped because the budget ran out rather than because
+        # the inner-validation curve turned over. A mean over seeds that all hit
+        # their budget is a floor under that budget, not a converged estimate,
+        # and that has to travel with the mean rather than be noticed by a reader
+        # comparing `selected_epochs` against `epochs` by hand.
+        "seeds_that_hit_the_epoch_budget": [
+            s for s in seeds if reports[s].get("selection_hit_budget")],
     }
 
     # One canonical statement of the protocol, taken from the seed reports'
@@ -133,7 +140,7 @@ def main():
     # how a producer and a consumer come to disagree (ERRATA E11).
     PROTOCOL_KEYS = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
                      "min_cells", "epochs", "inner_val_frac", "esm_table",
-                     "use_mask", "knn_k", "d_model")
+                     "use_mask", "knn_k", "d_model", "train_on_inner_val")
     proto, disagree = {}, {}
     for k in PROTOCOL_KEYS:
         vals = {s: (reports[s].get("provenance", {}).get("args", {}) or {}).get(k)
@@ -207,6 +214,13 @@ def main():
               f"that never beats retrieval or a linear map over the same "
               f"embeddings has not been shown to learn perturbation biology.",
               flush=True)
+    hit = summary["seeds_that_hit_the_epoch_budget"]
+    if hit:
+        print(f"\nNOTE: seeds {hit} selected their FINAL epoch, so the budget "
+              f"ended those runs rather than the inner-validation curve turning "
+              f"over. This mean is a floor under that budget. Extending the "
+              f"budget until a favoured model wins is the abuse to avoid: "
+              f"declare the new budget before running it.", flush=True)
 
     out = args.summary_json or os.path.join(args.out_dir, "seed_summary.json")
     write_json(out, summary, args=args)

@@ -6,6 +6,17 @@ Protocol (inherited from P2.1/P2.2, kept intact):
   true_dev     = true_fc - common_fc   <- the model predicts THIS directly
   pred_fc      = pred_dev + common_fc  (for full-fc metrics)
 
+Three item sets, and they do not overlap:
+  gradient     = training items MINUS the inner-validation slice
+  inner-val    = selects the epoch; never reported as performance
+  test         = scored exactly once, at the selected epoch
+The control baselines are fitted on the gradient set too, so every row of the
+results table has seen the same items. Before this was enforced, the inner
+validation slice was also trained on -- so the "selection" curve was a training
+curve and the head had ~18% more fitting data than the external baselines it was
+compared with (docs/ERRATA.md E16). `--train_on_inner_val` restores the old
+behaviour for measurement.
+
 Eval reports full-fc metrics (mse_DE / pearson_delta / top50) AND dev metrics
 (mse_dev / pearson_dev / top50_dev) PLUS a built-in conditioning ablation:
 each epoch, pred_dev is recomputed with the target ESM2 vector zeroed and
@@ -69,6 +80,16 @@ def parse_args():
     p.add_argument("--inner_val_frac", type=float, default=0.15,
                    help="fraction of TRAINING items held out for epoch/checkpoint "
                         "selection; the test split is scored once, afterwards")
+    p.add_argument("--train_on_inner_val", action="store_true", default=False,
+                   help="reproduce the pre-fix behaviour in which the inner "
+                        "validation items were ALSO used as training batches, so "
+                        "the epoch was selected on data the model had fitted "
+                        "(docs/ERRATA.md E16). With this flag the selection curve "
+                        "is a training curve: it rises for as long as the budget "
+                        "lasts, which is why every long run here selected its "
+                        "final epoch. Kept so the effect can be measured by "
+                        "flipping one flag; it is not a configuration to train "
+                        "for release.")
     p.add_argument("--no_mask", dest="use_mask", action="store_false", default=True,
                    help="reproduce the pre-v4 behaviour in which HVG columns a "
                         "dataset never measured entered the loss and every metric "
@@ -503,6 +524,35 @@ def main():
     rna_tr = (data["rna_embs"][:len(data["train_items"])].to(device)
               if model.proj_r is not None else None)
 
+    # ---- which training items the gradient actually sees ----
+    # The inner-validation slice exists to select the epoch. If the model also
+    # trains on it, that slice is training data and its correlation rises with
+    # the training loss, so "selection" picks whatever epoch the budget ends on
+    # -- which is what every long run here did (epochs 78/80, 150/150). It also
+    # silently gave the head ~18% more training items than GEARS and CPA, which
+    # `baseline_common.inner_split_items` hands the inner-TRAIN items only while
+    # documenting the footing as identical. See docs/ERRATA.md E16.
+    is_val = np.asarray(data["is_inner_val"], dtype=bool)
+    fit_pos = (np.arange(len(data["train_items"])) if args.train_on_inner_val
+               else np.flatnonzero(~is_val))
+    if not args.train_on_inner_val:
+        # Mechanical, not a promise in a comment: the gradient set and the
+        # selection set must not intersect.
+        assert not is_val[fit_pos].any(), \
+            "inner-validation items reached the training batches"
+    if len(fit_pos) == 0:
+        raise SystemExit("every training item landed in the inner-validation "
+                         "split, so there is nothing to fit on; lower "
+                         "--inner_val_frac")
+    fit_pos_t = torch.as_tensor(fit_pos, dtype=torch.long)
+    print(f"[split] gradient items: {len(fit_pos)} of {len(data['train_items'])} "
+          f"training items"
+          + ("  (--train_on_inner_val: the selection slice is ALSO trained on, "
+             "so the selection curve is a training curve -- ERRATA E16)"
+             if args.train_on_inner_val else
+             "  (inner-val held out of the gradient, as the selection requires)"),
+          flush=True)
+
     log_path = os.path.join(args.out_dir, "train_log.jsonl")
     # The log is append-only, so a re-run into an existing out_dir concatenates two
     # runs whose epoch numbers both start at 1 -- which is what happened when a
@@ -530,11 +580,11 @@ def main():
               f"confused", flush=True)
     best_pd, best_epoch = -float('inf'), -1
     ckpt_path = os.path.join(args.out_dir, 'ckpt_p3_best_dev.pt')
-    n = len(rows_tr)
+    n = len(fit_pos_t)
     for epoch in range(args.epochs):
         model.train()
         t0, run = time.time(), []
-        perm = torch.randperm(n)
+        perm = fit_pos_t[torch.randperm(n)]
         for lo in range(0, n, args.batch_size):
             idx = perm[lo:lo + args.batch_size]
             pred = model(rows_tr[idx], ds_tr[idx], cf_tr[idx],
@@ -621,6 +671,27 @@ def main():
     final["selected_epoch"] = best_epoch
     final["inner_val_pearson_dev_at_selection"] = float(best_pd)
     final["split_by"] = args.split_by
+    # Protocol fields: which items were fitted, and by what rule. A number quoted
+    # without them is not comparable to another number (ERRATA E11, E16), and the
+    # controls below are fitted on the same set, so one field covers every row of
+    # the table.
+    final["trained_on_inner_val"] = bool(args.train_on_inner_val)
+    final["n_train_items"] = int(len(data["train_items"]))
+    final["n_fit_items"] = int(len(fit_pos))
+    final["n_inner_val_items"] = int(is_val.sum())
+    final["n_test_items"] = int(len(data["test_items"]))
+    # Whether the budget, not the data, ended the run. Selecting the last epoch
+    # means the model was still improving when the budget expired, so the number
+    # is a floor under that budget rather than a converged estimate -- stated
+    # mechanically here because RESULTS_REAL.md had to say it in prose three
+    # times (epochs 78/80, 150/150).
+    final["selection_hit_budget"] = bool(best_epoch >= args.epochs)
+    final["epochs_budget"] = int(args.epochs)
+    if final["selection_hit_budget"]:
+        print(f"\nNOTE: the selected epoch IS the budget ({best_epoch}/"
+              f"{args.epochs}), so this model had not converged. Read the held-out "
+              f"number as a floor under this budget, not as a converged estimate.",
+              flush=True)
 
     # ---- control baselines on the same split, same mask, same metrics ----
     # Without these there is no evidence that the learned head does more than
@@ -657,10 +728,17 @@ def main():
     which = ["zero", "train_mean", "knn_esm2", "ridge_esm2"]
     if is_nb_te is not None:
         which.append("neighbor_prior")
+    # Fit the controls on exactly the items the head's gradient saw. Handing them
+    # the inner-validation items as well would give them ~18% more fitting data
+    # than the model they are controls for, which is the same footing defect as
+    # E16 with the sign reversed.
     base_preds = run_all(
-        data["dev_tr"], esm_np[data["rows_tr"]], esm_np[data["rows_te"]],
-        mask_tr=(data["mask_tr"] if args.use_mask else None), knn_k=args.knn_k,
-        which=which, is_nb_tr=is_nb_tr, is_nb_te=is_nb_te)
+        data["dev_tr"][fit_pos], esm_np[data["rows_tr"][fit_pos]],
+        esm_np[data["rows_te"]],
+        mask_tr=(data["mask_tr"][fit_pos] if args.use_mask else None),
+        knn_k=args.knn_k, which=which,
+        is_nb_tr=(None if is_nb_tr is None else is_nb_tr[fit_pos]),
+        is_nb_te=is_nb_te)
     mask_te = data["mask_te"] if args.use_mask else np.ones_like(data["mask_te"])
     dev_te = data["dev_te"]
     final["baselines"] = {}
@@ -668,7 +746,15 @@ def main():
         final["baselines"][name] = dict(
             pearson_dev=per_item_correlation(dev_te, pred, mask_te),
             pearson_dev_pooled=pooled_correlation(dev_te, pred, mask_te),
-            top50_dev=top_k_overlap(dev_te, pred, k=50, mask=mask_te))
+            top50_dev=top_k_overlap(dev_te, pred, k=50, mask=mask_te),
+            fit_items=int(len(fit_pos)))
+    final["footing"] = (
+        f"model and every control fitted on the same {len(fit_pos)} training "
+        f"items; the {int(is_val.sum())} inner-validation items selected the "
+        f"epoch and were "
+        + ("ALSO fitted (ERRATA E16 behaviour, --train_on_inner_val)"
+           if args.train_on_inner_val else "fitted by nobody")
+        + f"; {len(data['test_items'])} test items scored once")
 
     print("\n=== held-out results (scored once, at the selected epoch) ===",
           flush=True)

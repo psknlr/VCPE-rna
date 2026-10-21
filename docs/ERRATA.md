@@ -600,6 +600,118 @@ be measured rather than asserted.
 **Status.** Fixed; default changed. The effect on the reported score is measured
 with the real table, not with the placeholder used for the wiring check above.
 
+## E16 — The inner-validation slice was also used as training data
+
+**Defect.** `--inner_val_frac` was added to fix E3 by carving a selection slice
+out of the training items, and `evaluate(..., "inner_val", ...)` scored it each
+epoch. But the training loop went on drawing its batches from **every** training
+item:
+
+```python
+n = len(rows_tr)                      # ALL training items
+for epoch in range(args.epochs):
+    perm = torch.randperm(n)          # including the inner-validation ones
+```
+
+`src/maprna_p3/train_p3.py` (pre-fix): `is_inner_val` appeared in `evaluate` and
+nowhere in the loop that computed the gradient. So the slice that chose the epoch
+was data the model had fitted.
+
+Two consequences, neither visible in a result file:
+
+1. **The selection curve was a training curve.** It rises for as long as the
+   budget lasts, so "selection" returns whatever epoch the run ended on. That is
+   exactly the pattern recorded in RESULTS_REAL.md and read there as a property
+   of the model: epochs 28/30, 26/30, 26/30 at a 30-epoch budget; 78/80, 77/80,
+   78/80 at 80; **150 of 150** at 150, described as "still improving when the run
+   ends". A real validation curve can turn over. This one could not.
+2. **The head was fitted on ~18% more items than the models it was compared
+   with.** `baseline_common.inner_split_items` hands an external baseline the
+   inner-**train** items — correctly, so GEARS and CPA can early-stop on the
+   inner-val slice — and its docstring says it returns the lists "matching what
+   train_p3 trains and scores on". It did not match. Table D's fairness block
+   lists several asymmetries; this one was not among them, and it ran the other
+   way.
+
+The cheap controls were affected in the same direction: `run_all` was handed
+`dev_tr` and `rows_tr` whole, so ridge and k-NN were fitted on the full training
+set as well.
+
+**Fix.** The gradient set is the complement of the selection slice, and the
+controls are fitted on that same set, so every row of the results table has seen
+the same items. The disjointness is asserted at runtime rather than promised in a
+comment, and `final_report.json` now carries `n_fit_items`,
+`n_inner_val_items`, `trained_on_inner_val` and a `footing` sentence, so a number
+states which rule produced it. `run_seeds.py` refuses to average seeds run under
+different fit rules. `--train_on_inner_val` restores the old behaviour, so the
+size of the effect can be measured by flipping one flag — the same treatment as
+`--no_mask` for E6 and `--hvg_from all` for E15.
+
+A related reporting field falls out of it: `selection_hit_budget` records whether
+the selected epoch *is* the budget. RESULTS_REAL.md had to say that in prose
+three times; it is now a boolean in every report and a line in every seed
+summary.
+
+**Verification.** The end-to-end accounting is asserted on synthetic data
+(`tests/test_pipeline_smoke.py`): `n_fit_items == n_train_items -
+n_inner_val_items`, every control reports the same `fit_items`, and the flag
+flips it back. The structural guards are in `tests/test_inner_val_is_held_out.py`
+— the batch permutation must index the fit set, the fit set must be derived as
+the complement of `is_inner_val`, the disjointness assertion must exist, and the
+old rule must stay opt-in.
+
+**What this does to the numbers is not yet measured, and the direction is not
+obvious.** Stated in advance, before the re-run, so it can be wrong in public:
+
+* The selected epoch should stop pinning to the budget in long runs. If epochs
+  still come back as 150/150 with the slice genuinely held out, the model really
+  is undertrained and the earlier reading was right for the wrong reason.
+* Every method loses ~15% of its fitting data, so all the absolute numbers in
+  RESULTS_REAL.md Table A should fall a little. The **paired** head-vs-ridge
+  difference is the quantity at issue and it can move either way: the head loses
+  training items (hurts it) but gains an epoch choice that is no longer made on
+  fitted data (could help it, if it was previously selecting overfit epochs).
+* Table D's GEARS and CPA numbers do not change at all. What changes is that the
+  footing claim made around them becomes true.
+
+**Status.** Fixed; default changed. Every response-line number in
+RESULTS_REAL.md was produced under the old rule and is marked as such there. They
+are not withdrawn — the test split was scored once, after selection, and nothing
+reported was selected on it — but they were measured with 85% of the items used
+for selection also used for fitting, and the head-vs-ridge comparison they rest
+on was not run on an identical footing. Re-running them is the first item under
+Outstanding.
+
+## E17 — The metric-regression CI job has never once run
+
+**Defect.** `.github/workflows/tests.yml` defines a `metrics` job whose stated
+purpose is to "pin the evaluation defects recorded in docs/ERRATA.md so that
+those cannot silently return". It installs `numpy scipy pytest` — deliberately
+torch-free, for speed — and runs `python -m pytest tests/ -q`.
+
+Four tests import torch at collection time (`test_hvg_selection.py` and
+`test_baseline_gears.py` at module scope; one test each in
+`test_baseline_cpa.py` and `test_sweep_discipline.py` by running a script as a
+subprocess). A collection error is not a skip: pytest aborts the whole run. So
+the job failed in under a second on every push, and the guard against the errata
+returning was never evaluated.
+
+Both runs on `main` show it: the `metrics` job red, `syntax` and `pipeline`
+green ([run 51](https://github.com/psknlr/VCPE-rna/actions/runs/36815478044),
+[run 48](https://github.com/psknlr/VCPE-rna/actions/runs/36802100913)). A red
+check beside two green ones is easy to read as flakiness, which is how it
+survived two merges.
+
+**Fix.** The four tests skip cleanly when torch is absent
+(`pytest.importorskip` at the top of the two modules, a `skipif` mark on the two
+subprocess tests), so the collection error cannot take the run down. The torch
+job still exercises them. `python -m pytest tests/ -q` with numpy, scipy and
+pytest alone now collects and passes the whole suite.
+
+**Status.** Fixed. Worth recording rather than quietly repairing, because the
+failure mode is the one this document is about: a check that exists, is
+documented, is believed to be protecting something, and is not running.
+
 ## What is not affected
 
 * The **siRNA external evaluation** (`eval_sirna_external.py`) is mechanically
@@ -625,6 +737,17 @@ See [REPRODUCE.md](REPRODUCE.md) for how to regenerate every number under the co
 baselines and the per-axis ablation table.
 
 ## Outstanding
+
+**New first item: re-run the response line with the selection slice held out of
+the gradient (E16).** Every number in RESULTS_REAL.md was produced with the
+inner-validation items also used for fitting, so the epoch was selected on
+fitted data and the head was fitted on ~18% more items than GEARS and CPA. The
+code is fixed and the accounting is asserted; what is missing is the re-run.
+Three seeds at the 80-epoch budget reproduces Table A and the graph-feature
+comparison on the corrected footing, and the predictions this re-run can falsify
+are written down under E16 above. It needs a host that can hold a 3.3-hour run —
+the declared 150-epoch run died twice to container restarts, which is why
+`--resume` matters more than it looks.
 
 **Update: the first real-data runs are done.** The two items that most
 constrained every claim -- "no number regenerated" and "no external model run"

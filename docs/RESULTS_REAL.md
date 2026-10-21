@@ -13,6 +13,27 @@ never quote a number without its estimator, its split, its gene panel, and its
 embedding table, because mixing any of those is how the withdrawn figures were
 made.
 
+> ### ⚠️ Every response-line number below was produced under the E16 fit rule
+>
+> The inner-validation slice that selected the epoch was **also used as training
+> data** ([ERRATA E16](ERRATA.md#e16--the-inner-validation-slice-was-also-used-as-training-data)).
+> Two things follow, and they bear on how this whole document reads:
+>
+> * **"Still improving when the budget ends" was partly an artefact.** The
+>   selection curve was a training curve, so it could only rise — which is why
+>   selection returned epochs 28/30, 78/80 and 150/150. The sections below treat
+>   that pattern as a property of the model. Some of it may be, and the re-run
+>   will say; the measurement could not have shown otherwise.
+> * **The head was fitted on ~18% more items than GEARS and CPA** in Table D,
+>   whose fairness block does not list that asymmetry.
+>
+> Nothing here is withdrawn: the test split was scored once, after selection, and
+> no number below was selected on the slice it reports. But the head-vs-ridge
+> comparison these tables rest on was not run on an identical footing, and the
+> re-run on the corrected footing has not been done. The code is fixed and the
+> accounting is now asserted in the report; the predictions the re-run can
+> falsify are written down under E16.
+
 ## What was run
 
 Two real CRISPRi screens, the kind of knockdown this model claims to predict:

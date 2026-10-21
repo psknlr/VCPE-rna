@@ -13,6 +13,7 @@ parts that decide whether the comparison is valid and that do not need CPA:
 The `run` stage is exercised by actually running it (see the errata); it cannot be
 unit-tested here because importing CPA would break the environment.
 """
+import importlib.util
 import json
 import subprocess
 import sys
@@ -24,6 +25,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "src" / "maprna_p3" / "baseline_cpa.py"
 sys.path.insert(0, str(ROOT / "src" / "maprna_p3"))
+
+# The tests that run the script as a subprocess need torch, because the script
+# imports train_p3. The pure-logic tests in this file do not, and they are part
+# of what the fast torch-free CI job enforces, so the skip is per test.
+needs_torch = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None,
+    reason="runs baseline_cpa.py, which imports train_p3 -> torch")
 
 
 # --------------------------------------------------------------------------
@@ -92,6 +100,7 @@ def test_a_stage_is_required():
     assert "export" in (p.stdout + p.stderr) and "score" in (p.stdout + p.stderr)
 
 
+@needs_torch
 def test_export_refuses_more_than_one_dataset():
     """CPA is set up per AnnData; a multi-dataset VCPE run has no counterpart."""
     p = subprocess.run(

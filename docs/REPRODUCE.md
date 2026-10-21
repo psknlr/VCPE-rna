@@ -165,6 +165,32 @@ whose gene was trained on is not held out.
 baselines, the selected epoch, and a `provenance` block (git revision, dirty
 flag, full command line, all arguments, resolved package versions).
 
+**Three item sets, and they do not overlap.** The gradient sees the training
+items **minus** the inner-validation slice; the slice selects the epoch; the test
+split is scored once at the selected epoch. The controls in §2.2 are fitted on
+the gradient set too, so every row of the table has seen the same items. The
+report states the accounting — `n_fit_items`, `n_inner_val_items`,
+`n_test_items`, `trained_on_inner_val` and a `footing` sentence — because a
+number that does not carry its fit rule cannot be set beside another number.
+Check it rather than assuming it:
+
+```bash
+python - <<'PY'
+import json; r = json.load(open("runs/p3_seed0/final_report.json"))
+assert r["n_fit_items"] == r["n_train_items"] - r["n_inner_val_items"]
+assert all(b["fit_items"] == r["n_fit_items"] for b in r["baselines"].values())
+print(r["footing"]); print("selection hit the budget:", r["selection_hit_budget"])
+PY
+```
+
+Until this was enforced the slice was *also* trained on, so the selection curve
+was a training curve and selection landed on the final epoch in every long run
+(ERRATA E16). `--train_on_inner_val` reproduces that, for measuring the effect
+only. If `selection_hit_budget` is true the run ended because the budget ran out,
+so its held-out number is a floor under that budget rather than a converged
+estimate — and the way *not* to resolve that is to extend the budget until a
+favoured model wins. Declare the new budget first.
+
 ### 2.2 Read the baselines before the model
 
 The report prints the model next to four controls:
@@ -374,7 +400,13 @@ predicting modification effects.
 
 Before a number leaves this repository:
 
-- [ ] Selected on an inner split, not the reported slice
+- [ ] Selected on an inner split, not the reported slice — and that split was
+      held out of the gradient (`n_fit_items == n_train_items -
+      n_inner_val_items`, E16), not merely scored separately
+- [ ] Every model in the table fitted on the same items (`fit_items` equal on
+      every row); any remaining asymmetry named in the `fairness` block
+- [ ] `selection_hit_budget` false, or the number reported as a floor under a
+      budget that was declared before the run
 - [ ] ≥5 seeds; mean ± sample sd and a CI, never a bare point estimate
 - [ ] Compared against `knn_esm2` / `ridge_esm2` (response) or the literature
       comparators **with the estimator named** (efficacy), paired where possible

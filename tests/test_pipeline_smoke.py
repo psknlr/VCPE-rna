@@ -303,6 +303,62 @@ def test_ablation_quotes_the_shuffle_floor_not_the_zeroed_one(synth, trained):
     assert "upper bound" in interp["note"] or "upper bound" in log
 
 
+def test_the_selection_slice_is_not_in_the_gradient_and_the_report_says_so(trained):
+    """ERRATA E16, measured through the real producer.
+
+    The inner-validation slice selects the epoch, so it must not be fitted. The
+    accounting has to add up in the report as well as in the loop, because the
+    footing claim made in Table D -- that the head and the external baselines
+    share a split -- is read off these fields.
+    """
+    out, log = trained
+    rep = json.loads((out / "final_report.json").read_text())
+
+    assert rep["trained_on_inner_val"] is False
+    assert rep["n_inner_val_items"] > 0, "no selection slice was carved out"
+    assert rep["n_fit_items"] == rep["n_train_items"] - rep["n_inner_val_items"], (
+        "the gradient set is not the complement of the selection slice: "
+        f"{rep['n_fit_items']} fitted of {rep['n_train_items']} training items "
+        f"with {rep['n_inner_val_items']} held out for selection")
+    assert f"gradient items: {rep['n_fit_items']} of" in log
+    assert "inner-val held out of the gradient" in log
+
+    # every control is fitted on exactly those items, or the table compares
+    # models that saw different data
+    for name, m in rep["baselines"].items():
+        assert m["fit_items"] == rep["n_fit_items"], \
+            f"{name} was fitted on {m['fit_items']} items, the head on {rep['n_fit_items']}"
+    assert str(rep["n_fit_items"]) in rep["footing"]
+
+
+def test_the_old_fit_rule_is_reachable_and_labels_itself(synth):
+    """--train_on_inner_val reproduces the pre-fix behaviour so its effect can be
+    measured, and must be impossible to mistake for the default (cf. --no_mask,
+    --hvg_from all)."""
+    out = synth / "p3_e16_old"
+    log = _run(["src/maprna_p3/train_p3.py",
+                "--data_dirs", str(synth / "ds1.h5ad"), str(synth / "ds2.h5ad"),
+                "--esm_table", str(synth / "esm.pt"), "--out_dir", str(out),
+                "--epochs", "2", "--n_hvg", "40", "--batch_size", "8",
+                "--split_by", "target_gene", "--train_on_inner_val"])
+    rep = json.loads((out / "final_report.json").read_text())
+    assert rep["trained_on_inner_val"] is True
+    assert rep["n_fit_items"] == rep["n_train_items"], \
+        "the old rule fits every training item, selection slice included"
+    assert "ERRATA E16" in log, "the old rule must announce itself"
+    assert "E16" in rep["footing"]
+
+
+def test_the_report_says_whether_the_budget_ended_the_run(trained):
+    """RESULTS_REAL.md had to say this in prose three times (78/80, 150/150): a
+    selected epoch equal to the budget means the model was still improving, so
+    the number is a floor under that budget rather than a converged estimate."""
+    out, _ = trained
+    rep = json.loads((out / "final_report.json").read_text())
+    assert rep["epochs_budget"] == 4
+    assert rep["selection_hit_budget"] == (rep["selected_epoch"] >= 4)
+
+
 def test_a_rerun_marks_the_log_boundary_instead_of_silently_concatenating(synth):
     """Found while resuming a killed run: train_log.jsonl is append-only, so a
     re-run into an existing out_dir left a log reading epochs 1..74 then 1..80
