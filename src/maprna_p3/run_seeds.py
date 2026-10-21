@@ -133,6 +133,32 @@ def main():
             s for s in seeds if reports[s].get("selection_hit_budget")],
     }
 
+    # Secondary metrics across seeds, for the model and every control. They are
+    # aggregated here rather than left in the per-seed files because a reader
+    # comparing a single seed's direction agreement against another single seed's
+    # is comparing two splits, and on this data the split is the larger source of
+    # variation.
+    SECONDARY = ("spearman_dev", "enrichment_top5pct_dev",
+                 "direction_agreement_top10pct_dev")
+    summary["secondary"] = {
+        "model": {k: summarise([reports[s].get(k) for s in seeds], k)
+                  for k in SECONDARY},
+        "baselines": {
+            n: {k: summarise([reports[s].get("baselines", {}).get(n, {}).get(k)
+                              for s in seeds], k) for k in SECONDARY}
+            for n in base_names},
+        "chance_levels": {"spearman_dev": 0.0, "enrichment_top5pct_dev": 1.0,
+                          "direction_agreement_top10pct_dev": 0.5},
+    }
+
+    # Which hyperparameters each control was given, per seed. A selected knob can
+    # land on a different value on every split, and a table that quotes one value
+    # for a three-seed mean is quoting a hyperparameter that was not used.
+    summary["control_hyperparameters_per_seed"] = {
+        n: [reports[s].get("baselines", {}).get(n, {}).get("hyperparameters")
+            for s in seeds]
+        for n in base_names}
+
     # One canonical statement of the protocol, taken from the seed reports'
     # own provenance rather than re-derived from this script's passthrough
     # arguments. A consumer that has to parse `forward` to learn the gene panel
@@ -140,7 +166,11 @@ def main():
     # how a producer and a consumer come to disagree (ERRATA E11).
     PROTOCOL_KEYS = ("data_dirs", "n_hvg", "hvg_from", "split_by", "test_frac",
                      "min_cells", "epochs", "inner_val_frac", "esm_table",
-                     "use_mask", "knn_k", "d_model", "train_on_inner_val")
+                     "use_mask", "knn_k", "d_model", "train_on_inner_val",
+                     # what the controls ran at. `ridge_esm2` at two different
+                     # alphas is two different controls, and averaging them would
+                     # be E4's failure mode applied to a baseline row.
+                     "ridge_alpha", "no_control_selection", "rff_features")
     proto, disagree = {}, {}
     for k in PROTOCOL_KEYS:
         vals = {s: (reports[s].get("provenance", {}).get("args", {}) or {}).get(k)

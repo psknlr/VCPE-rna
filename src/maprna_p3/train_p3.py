@@ -44,9 +44,57 @@ for _sib in ("maprna_p1", "maprna_p2", "."):
 
 from ds_knockdown import build_symbol2row, load_kd_datasets, make_hvg_list, resolve_pert_row  # noqa: E402
 from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
-from baselines import run_all  # noqa: E402
+from baselines import run_all, select_control_hyperparams  # noqa: E402
 from eval_metrics import (  # noqa: E402
-    per_item_correlation, pooled_correlation, top_k_overlap)
+    direction_agreement, enrichment_factor, paired_bootstrap_per_item,
+    per_item_correlation, per_item_correlation_detail, per_item_spearman,
+    pooled_correlation, top_k_overlap)
+
+
+def _control_hyperparameters(name, args, selected):
+    """What each control actually ran at, in its own row of the report.
+
+    A control quoted without its hyperparameter is as uncomparable as a score
+    quoted without its estimator: `ridge_esm2` at alpha=1.0 and `ridge_esm2_sel`
+    at a selected alpha are different controls, and the difference between them
+    is part of what the table shows.
+    """
+    sel = selected or {}
+    if name == "ridge_esm2":
+        return {"alpha": float(args.ridge_alpha), "chosen_by": "fixed default"}
+    if name == "knn_esm2":
+        return {"k": int(args.knn_k), "chosen_by": "fixed default"}
+    if name == "ridge_esm2_sel":
+        return {"alpha": sel.get("ridge_alpha"), "chosen_by": "inner_val"}
+    if name == "knn_esm2_sel":
+        return {"k": sel.get("knn_k"), "chosen_by": "inner_val"}
+    if name == "rff_ridge_esm2_sel":
+        return {"alpha": sel.get("rff_alpha"),
+                "gamma_mult": sel.get("rff_gamma_mult"),
+                "n_features": sel.get("rff_n_features"),
+                "seed": sel.get("rff_seed"), "chosen_by": "inner_val"}
+    return {"chosen_by": "no hyperparameters"}
+
+
+def secondary_metrics(true, pred, mask):
+    """Metrics a Pearson correlation does not imply, under their own names.
+
+    `pearson_dev` is the headline and stays the headline. But a model can
+    correlate well and still get the sign wrong on the genes with the largest
+    responses, and ERRATA E2 was a top-k enrichment whose chance level was
+    misscaled, so both are worth carrying beside it -- computed once here, for
+    the model and for every control, from the shared definitions.
+    """
+    return {
+        "spearman_dev": per_item_spearman(true, pred, mask),
+        "enrichment_top5pct_dev": enrichment_factor(true, pred, k_frac=0.05,
+                                                    mask=mask),
+        "direction_agreement_top10pct_dev": direction_agreement(
+            true, pred, mask=mask, top_frac=0.10),
+        "secondary_metric_chance_levels": {
+            "spearman_dev": 0.0, "enrichment_top5pct_dev": 1.0,
+            "direction_agreement_top10pct_dev": 0.5},
+    }
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from provenance import stamp, write_json  # noqa: E402
 
@@ -101,7 +149,27 @@ def parse_args():
                         "(docs/ERRATA.md E6); it is not a configuration to train "
                         "for release.\n")
     p.add_argument("--knn_k", type=int, default=10,
-                   help="neighbours for the ESM2 retrieval control baseline")
+                   help="neighbours for the ESM2 retrieval control baseline, as a "
+                        "fixed default. The `knn_esm2_sel` row selects k on the "
+                        "inner-validation slice instead; this one is kept so the "
+                        "name means in a new table what it meant in an old one.")
+    p.add_argument("--ridge_alpha", type=float, default=1.0,
+                   help="ridge penalty for the fixed-default `ridge_esm2` row. "
+                        "The `ridge_esm2_sel` row selects it on inner validation.")
+    p.add_argument("--no_control_selection", action="store_true", default=False,
+                   help="skip inner-validation selection for the control "
+                        "baselines, leaving only the fixed-default rows. Selection "
+                        "costs a handful of closed-form solves; this exists for "
+                        "reproducing a table made before it.")
+    p.add_argument("--rff_features", type=int, default=1024,
+                   help="random Fourier features for the non-linear control. This "
+                        "is the rung between a linear map and the head: a generic "
+                        "non-linear map on identical features, fitted in closed "
+                        "form. If it matches the head, the head's margin over "
+                        "ridge is non-linearity rather than architecture.")
+    p.add_argument("--n_boot_items", type=int, default=2000,
+                   help="bootstrap replicates for the paired item-level interval "
+                        "against each control. 0 disables it.")
     p.add_argument("--hvg_from", choices=("train", "all"), default="train",
                    help="which perturbations the response panel is ranked on. train "
                         "(default) is correct. all reproduces the earlier behaviour, "
@@ -357,7 +425,8 @@ def make_rna_emb_lookup(args, data):
 # ---------------- eval ----------------
 
 @torch.no_grad()
-def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
+def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True,
+             return_pred=False):
     """split: 'test' | 'train' | 'inner_val' | 'inner_train'.
 
     'inner_val' is the slice used for epoch/checkpoint selection; 'test' must be
@@ -434,27 +503,21 @@ def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
     def _per_item(pred, true, k=50):
         """Per-perturbation Pearson and top-k overlap over measured columns only.
 
+        Delegates to `eval_metrics`, which the baselines are also scored by. This
+        used to be a second implementation living here, differing from the shared
+        one only in its degeneracy threshold (1e-6 against 1e-12) -- so the model
+        and the controls in the same table were scored by two implementations of
+        `pearson_dev`. That is E4's shape one level down, and
+        `tests/test_metrics.py` now pins the two as equal on profiles whose std
+        is not inside that window, which is every real one.
+
         The top-k term is skipped for items with fewer than 2k measured columns:
         taking the top n of n gives 1.0 by construction, which reads as a perfect
         score while carrying no information.
         """
-        prs, tops = [], []
-        for b in range(len(true)):
-            m = mask[b]
-            if m.sum() < 10:
-                continue
-            t, p = true[b][m], pred[b][m]
-            if t.std() > 1e-6 and p.std() > 1e-6:
-                prs.append(float(np.corrcoef(t, p)[0, 1]))
-            else:
-                prs.append(0.0)
-            if len(t) >= 2 * k:
-                tops.append(len(set(np.argsort(-np.abs(t))[:k])
-                                & set(np.argsort(-np.abs(p))[:k])) / k)
-        if not prs:
-            return float("nan"), float("nan"), 0
-        top = float(np.mean(tops)) if tops else float("nan")
-        return float(np.mean(prs)), top, len(prs)
+        d = per_item_correlation_detail(true, pred, mask)
+        return (d["value"], top_k_overlap(true, pred, k=k, mask=mask, min_ratio=2),
+                d["n_scored"])
 
     out["mse_DE"] = _masked_mse(pred_fc, fc)
     out["mse_DE_baseline_ctrl"] = _masked_mse(np.zeros_like(fc), fc)
@@ -464,10 +527,18 @@ def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
     pd_, td_, n_scored = _per_item(pred_dev, dev)
     out["pearson_dev"], out["top50_dev"] = pd_, td_
     out["n_scored_perturbations"] = n_scored
+    # Metrics that a correlation does not imply, computed for the model here and
+    # for every control in the final table, so the rows are comparable.
+    out.update(secondary_metrics(dev, pred_dev, mask))
+    _d = per_item_correlation_detail(dev, pred_dev, mask)
+    out["n_degenerate_perturbations"] = _d["n_degenerate"]
+    out["n_skipped_too_few_features"] = _d["n_skipped_too_few_features"]
     # Estimator label, so that this number is never silently compared against
     # eval_fair.py's flattened pooled correlation -- they are different
     # estimators and differ by ~1.5x on the same checkpoint.
     out["pearson_dev_estimator"] = "mean_over_perturbations_of_within_perturbation_r"
+    if return_pred:
+        return out, pred_dev
     return out
 
 
@@ -667,7 +738,8 @@ def main():
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     load_dev_state(model, ck)
     model.to(device).eval()
-    final = evaluate(model, data, "test", device, use_mask=args.use_mask)
+    final, model_pred_te = evaluate(model, data, "test", device,
+                                    use_mask=args.use_mask, return_pred=True)
     final["selected_epoch"] = best_epoch
     final["inner_val_pearson_dev_at_selection"] = float(best_pd)
     final["split_by"] = args.split_by
@@ -728,6 +800,36 @@ def main():
     which = ["zero", "train_mean", "knn_esm2", "ridge_esm2"]
     if is_nb_te is not None:
         which.append("neighbor_prior")
+
+    # ---- the controls get the selection discipline the head gets ----
+    # alpha=1.0 and k=10 were fixed defaults for every number this repository has
+    # published, while the head's epoch is selected on the inner split and its lr
+    # / width / decay were tuned over many runs on this data. A control denied its
+    # one knob is a weaker control than it looks. Chosen here on the
+    # inner-validation slice only -- the held-out set is not consulted, and the
+    # full grid goes into the report so the choice is auditable.
+    val_pos = np.flatnonzero(is_val)
+    selected = None
+    if len(val_pos) >= 2 and not args.no_control_selection:
+        print(f"\n[controls] selecting hyperparameters on {len(val_pos)} "
+              f"inner-validation items (held-out set not consulted)", flush=True)
+        selected = select_control_hyperparams(
+            data["dev_tr"][fit_pos], esm_np[data["rows_tr"][fit_pos]],
+            data["dev_tr"][val_pos], esm_np[data["rows_tr"][val_pos]],
+            mask_fit=(data["mask_tr"][fit_pos] if args.use_mask else None),
+            mask_val=(data["mask_tr"][val_pos] if args.use_mask else None),
+            rff_n_features=args.rff_features, seed=args.seed)
+        final["control_selection"] = selected
+        which += ["ridge_esm2_sel", "knn_esm2_sel", "rff_ridge_esm2_sel"]
+        print(f"[controls] ridge alpha={selected.get('ridge_alpha')} "
+              f"knn k={selected.get('knn_k')} "
+              f"rff alpha={selected.get('rff_alpha')} "
+              f"gamma_mult={selected.get('rff_gamma_mult')}", flush=True)
+        edge = [k for k in ("ridge_alpha", "knn_k")
+                if selected.get(k + "_at_grid_edge")]
+        if edge:
+            print(f"[controls] WARNING: {edge} selected at the edge of the grid, "
+                  f"so the grid may be what chose them, not the data", flush=True)
     # Fit the controls on exactly the items the head's gradient saw. Handing them
     # the inner-validation items as well would give them ~18% more fitting data
     # than the model they are controls for, which is the same footing defect as
@@ -736,18 +838,31 @@ def main():
         data["dev_tr"][fit_pos], esm_np[data["rows_tr"][fit_pos]],
         esm_np[data["rows_te"]],
         mask_tr=(data["mask_tr"][fit_pos] if args.use_mask else None),
-        knn_k=args.knn_k, which=which,
+        knn_k=args.knn_k, which=which, selected=selected,
         is_nb_tr=(None if is_nb_tr is None else is_nb_tr[fit_pos]),
         is_nb_te=is_nb_te)
     mask_te = data["mask_te"] if args.use_mask else np.ones_like(data["mask_te"])
     dev_te = data["dev_te"]
     final["baselines"] = {}
     for name, pred in base_preds.items():
-        final["baselines"][name] = dict(
+        row = dict(
             pearson_dev=per_item_correlation(dev_te, pred, mask_te),
             pearson_dev_pooled=pooled_correlation(dev_te, pred, mask_te),
             top50_dev=top_k_overlap(dev_te, pred, k=50, mask=mask_te),
             fit_items=int(len(fit_pos)))
+        row.update(secondary_metrics(dev_te, pred, mask_te))
+        row["hyperparameters"] = _control_hyperparameters(name, args, selected)
+        # The paired item-level interval. It answers a different question from
+        # the multi-seed interval in run_seeds.py and does not replace it: this
+        # one varies the sample of perturbations within one split, that one
+        # varies which genes are held out. On this data ridge's own score moved
+        # 0.039 between splits, so the second is the harder question and a
+        # narrow interval here is not a settled comparison.
+        if args.n_boot_items > 0:
+            row["paired_vs_model_items"] = paired_bootstrap_per_item(
+                dev_te, model_pred_te, pred, mask=mask_te,
+                n_boot=args.n_boot_items, seed=args.seed)
+        final["baselines"][name] = row
     final["footing"] = (
         f"model and every control fitted on the same {len(fit_pos)} training "
         f"items; the {int(is_val.sum())} inner-validation items selected the "
@@ -758,11 +873,29 @@ def main():
 
     print("\n=== held-out results (scored once, at the selected epoch) ===",
           flush=True)
-    print(f"{'model':<14} pearson_dev={final['pearson_dev']:.4f}  "
-          f"top50_dev={final['top50_dev']:.4f}", flush=True)
+    print(f"every row fitted on the same {len(fit_pos)} items; "
+          f"{len(data['test_items'])} test items; estimator "
+          f"{final['pearson_dev_estimator']}", flush=True)
+    print(f"{'model':<19} {'pearson':>8} {'spearman':>9} {'EF5%':>6} "
+          f"{'dir':>6} {'paired vs model (items)':>30}", flush=True)
+    print(f"{'P3 head':<19} {final['pearson_dev']:>8.4f} "
+          f"{final['spearman_dev']:>9.4f} "
+          f"{final['enrichment_top5pct_dev']:>6.2f} "
+          f"{final['direction_agreement_top10pct_dev']:>6.3f} "
+          f"{'--':>30}", flush=True)
     for name, m in final["baselines"].items():
-        print(f"{name:<14} pearson_dev={m['pearson_dev']:.4f}  "
-              f"top50_dev={m['top50_dev']:.4f}", flush=True)
+        pb = m.get("paired_vs_model_items", {})
+        ci = pb.get("ci95") or [float("nan"), float("nan")]
+        txt = (f"{pb.get('difference', float('nan')):+.4f} "
+               f"[{ci[0]:+.4f},{ci[1]:+.4f}]")
+        print(f"{name:<19} {m['pearson_dev']:>8.4f} {m['spearman_dev']:>9.4f} "
+              f"{m['enrichment_top5pct_dev']:>6.2f} "
+              f"{m['direction_agreement_top10pct_dev']:>6.3f} {txt:>30}",
+          flush=True)
+    print("chance: spearman 0.0, EF5% 1.0, dir 0.5. The paired interval varies "
+          "the SAMPLE OF PERTURBATIONS within this one split; it does not vary "
+          "which genes are held out -- run_seeds.py answers that, and it is the "
+          "harder question.", flush=True)
     beaten = [n for n, m in final["baselines"].items()
               if final["pearson_dev"] <= m["pearson_dev"]]
     if beaten:
@@ -770,6 +903,15 @@ def main():
               f"A conditioned model that loses to retrieval or to a linear map "
               f"over the same embeddings has not been shown to learn "
               f"perturbation-specific biology.", flush=True)
+    if selected and "rff_ridge_esm2_sel" in final["baselines"]:
+        rff = final["baselines"]["rff_ridge_esm2_sel"]["pearson_dev"]
+        lin = final["baselines"].get("ridge_esm2_sel",
+                                     final["baselines"]["ridge_esm2"])["pearson_dev"]
+        print(f"\n[non-linearity control] a generic non-linear map on the same "
+              f"features scores {rff:.4f} against the linear map's {lin:.4f} and "
+              f"the head's {final['pearson_dev']:.4f}. Read the head's margin "
+              f"over the LINEAR map as architecture only if it also exceeds this "
+              f"row; otherwise what the head has is non-linearity.", flush=True)
 
     ck["metrics"] = final
     torch.save(ck, ckpt_path)

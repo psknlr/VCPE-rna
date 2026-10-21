@@ -682,6 +682,90 @@ for selection also used for fitting, and the head-vs-ridge comparison they rest
 on was not run on an identical footing. Re-running them is the first item under
 Outstanding.
 
+## E18 — The controls were never allowed to fit their one knob, and the non-linearity rung was missing
+
+**Defect.** Three things, which together decide the central comparison this
+project makes.
+
+1. **No selection for the controls.** `ridge_esm2` ran at `alpha=1.0` and
+   `knn_esm2` at `k=10` for every number this repository has published. Neither
+   was ever selected on anything. The head, meanwhile, gets its epoch chosen on
+   an inner split, and its lr / width / weight decay were "tuned on this data
+   over many runs" (stated in `baseline_gears.py` as a fairness caveat against
+   GEARS — the same caveat applies against ridge and was not drawn). A control
+   denied its one hyperparameter is a weaker control than it looks, and the
+   comparisons that rest on it are:
+
+   * "the head beats `ridge_esm2` by +0.027 on ESM2-150M, every seed"
+   * "ridge gains twice what the head does on the graph table (+0.072 vs
+     +0.036)", hence "the head's edge existed only while the features were
+     impoverished"
+
+   The second is a comparison of two gains, both of which depend on a penalty
+   that was never fitted — and `alpha=1.0` on a 1280-dimensional feature table is
+   not the same regularisation as `alpha=1.0` on a 640-dimensional one.
+
+2. **A missing rung.** The published reading of the head's margin is that "its
+   non-linearity was substituting for information the representation lacked".
+   Between "a linear map on these features" and "this architecture" there is a
+   step that was never run: a *generic* non-linear map on the same features. With
+   no such row, any margin over ridge is attributed to the architecture by
+   default, which is the thing the margin was supposed to establish.
+
+3. **No power.** Every comparison is settled by a normal approximation over 3 or
+   5 seeds. At n=3 the interval is wide almost regardless of the data: the
+   reported head-vs-ridge CI of [-0.031, +0.026] is consistent with a real effect
+   of either sign, so "tie" has been doing double duty for "no difference" and
+   "not enough seeds to tell". The held-out set has ~350 perturbations and that
+   sample was never used for an interval.
+
+**Fix.**
+
+* `select_control_hyperparams` chooses ridge's `alpha`, k-NN's `k` and the new
+  control's `alpha`/bandwidth **on the inner-validation slice alone** — the same
+  rule the head's epoch obeys — fitting on the same items the head's gradient
+  sees. The full grid is in the report, with an `*_at_grid_edge` flag, because a
+  value chosen at the edge of a grid was chosen by the grid and not by the data.
+* The selected variants are **new rows** (`ridge_esm2_sel`, `knn_esm2_sel`), and
+  the fixed-default rows keep their names and values. Silently changing what
+  `ridge_esm2` means between two tables is E4 with a different knob.
+* `rff_ridge_esm2_sel` is the missing rung: ridge over random Fourier features of
+  the same ESM2 vectors — a generic non-linear map, closed-form, deterministic
+  given its seed, no architecture. The run prints the three numbers side by side
+  and states the reading: a margin over the linear map is architecture only if it
+  also exceeds this row.
+* `paired_bootstrap_per_item` resamples the held-out perturbations, paired, and
+  every control row carries one. It is exact against the naive loop (pinned by a
+  test) and ~150x faster, which is why it can be on every row rather than in a
+  one-off analysis. It states in its own output what it does **not** cover: the
+  split. `run_seeds.py` answers that, and on this data it is the harder question
+  — ridge's own score moved 0.039 between splits.
+* Secondary metrics with their chance levels travel with each row: per-item
+  Spearman (0.0), top-5% enrichment scaled so chance is 1.0 (E2's divisor, fixed
+  once in the shared module), and direction agreement on each item's largest
+  responses (0.5). A model can correlate well and still have the sign wrong on
+  the genes with the largest effects, which is what a user of a knockdown
+  prediction acts on.
+
+**Stated in advance, before the re-run.** Selecting `alpha` can only raise
+ridge's inner-validation score, and on this data it should mostly transfer, so
+**the head's +0.027 margin on the plain 150M table should shrink** — possibly to
+nothing. On the graph table, where the head and ridge were tied, the direction is
+unclear: both read the same features and only ridge gains a fitted penalty. If
+`rff_ridge_esm2_sel` lands at or above the head, the remaining case for the
+architecture is gone; if the head stays above it, there is something the
+architecture does that a generic non-linear map on the same features does not,
+which would be the first positive architectural result this project has.
+
+**One asymmetry remains, and it now favours the head.** Its hyperparameters came
+from many historical runs, several made under a protocol that peeked at the test
+split (E3); the controls get a small declared grid on inner validation. That is
+not equal treatment, it is just no longer the reverse.
+
+**Status.** Implemented and tested; the real-data re-run is pending, together
+with E16's. Every head-vs-ridge statement in RESULTS_REAL.md should be read as
+"against an unfitted ridge" until then.
+
 ## E17 — The metric-regression CI job has never once run
 
 **Defect.** `.github/workflows/tests.yml` defines a `metrics` job whose stated

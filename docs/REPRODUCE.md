@@ -193,19 +193,57 @@ favoured model wins. Declare the new budget first.
 
 ### 2.2 Read the baselines before the model
 
-The report prints the model next to four controls:
+The report prints the model next to seven controls:
 
-| Baseline | What it tests |
-|---|---|
-| `zero` | predict no residual — the floor conditioning must clear |
-| `train_mean` | the mean training residual, ignoring which gene was perturbed |
-| `knn_esm2` | average the residuals of the k nearest training perturbations in ESM2 space — **retrieval with no learning** |
-| `ridge_esm2` | closed-form linear map from the ESM2 vector to the residual profile |
+| Baseline | What it tests | Hyperparameters |
+|---|---|---|
+| `zero` | predict no residual — the floor conditioning must clear | none |
+| `train_mean` | the mean training residual, ignoring which gene was perturbed | none |
+| `knn_esm2` | average the residuals of the k nearest training perturbations in ESM2 space — **retrieval with no learning** | `k=10`, fixed default |
+| `ridge_esm2` | closed-form linear map from the ESM2 vector to the residual profile | `alpha=1.0`, fixed default |
+| `knn_esm2_sel` | the same retrieval rule, with `k` chosen on inner validation | selected |
+| `ridge_esm2_sel` | the same linear map, with `alpha` chosen on inner validation | selected |
+| `rff_ridge_esm2_sel` | **a generic non-linear map on identical features**: ridge over random Fourier features, closed form | selected |
 
-`knn_esm2` is the one that matters. It uses the same conditioning information the
-model receives. If the learned head does not beat it, the head is an expensive
-nearest-neighbour lookup, and the run prints a warning saying so. In this field
-cheap baselines have repeatedly proved hard to beat, so this is not a formality.
+`knn_esm2` is the one that matters for "is this retrieval". It uses the same
+conditioning information the model receives, and if the learned head does not
+beat it, the head is an expensive nearest-neighbour lookup — the run prints a
+warning saying so. In this field cheap baselines have repeatedly proved hard to
+beat, so this is not a formality.
+
+**Read the `_sel` rows, not the default ones, when comparing against the head.**
+For every number this repository published before, `alpha` was 1.0 and `k` was 10
+— chosen once, never selected — while the head's epoch is selected on an inner
+split and its lr / width / decay were tuned over many runs on this data
+(ERRATA E18). The `_sel` rows give the controls the same discipline: the knob is
+chosen on the inner-validation slice alone, fitted on the same items the head's
+gradient sees, and the full grid is in `control_selection` so the choice can be
+audited. The default rows are kept, unchanged, so a new table can still be set
+beside an old one. `--no_control_selection` turns selection off.
+
+**`rff_ridge_esm2_sel` is the rung that decides what a margin over ridge means.**
+The published reading of the head's +0.027 over `ridge_esm2` was that its
+non-linearity was substituting for information the representation lacked. A
+generic non-linear map on the same features tests that directly: if it matches
+the head, what the head has is non-linearity rather than architecture. The run
+prints all three numbers together with that reading attached.
+
+**Each control row also carries a paired item-level interval** against the head
+(`paired_vs_model_items`), resampling the held-out perturbations. It answers a
+different question from the multi-seed interval in §2.3 and replaces nothing:
+this one varies *which perturbations* are sampled within one split; that one
+varies *which genes are held out*, and on this data the split is the larger
+source of variation (ridge's own score moved 0.039 between splits). A narrow
+interval here beside a wide one there means the difference is stable given the
+split and not yet established across splits.
+
+Three secondary metrics travel with every row, each with its chance level:
+per-item Spearman (chance 0.0), top-5% enrichment scaled so that **chance is
+1.0** (ERRATA E2 was this metric with the wrong divisor), and direction agreement
+on each item's largest responses (chance 0.5). The last is what a user of a
+knockdown prediction acts on, and it is not implied by a correlation: a model can
+correlate well and still have the sign wrong on the genes with the largest
+effects.
 
 ### 2.3 Multiple seeds — required before quoting anything
 
@@ -408,8 +446,14 @@ Before a number leaves this repository:
 - [ ] `selection_hit_budget` false, or the number reported as a floor under a
       budget that was declared before the run
 - [ ] ≥5 seeds; mean ± sample sd and a CI, never a bare point estimate
-- [ ] Compared against `knn_esm2` / `ridge_esm2` (response) or the literature
-      comparators **with the estimator named** (efficacy), paired where possible
+- [ ] Compared against `knn_esm2_sel` / `ridge_esm2_sel` — the controls with
+      their knob selected on inner validation, not the fixed defaults (E18) —
+      or the literature comparators **with the estimator named** (efficacy),
+      paired where possible
+- [ ] A margin over the linear control checked against `rff_ridge_esm2_sel`
+      before it is called architecture rather than non-linearity
+- [ ] Both intervals reported where they exist: paired over items (within a
+      split) and paired over seeds (across splits), each labelled
 - [ ] Estimator stated explicitly (`per_pert` vs `pooled`; `pooled` vs
       `per_screen_median`)
 - [ ] Split grouping stated, and its leakage audited (`seq_dedup.py`, or the

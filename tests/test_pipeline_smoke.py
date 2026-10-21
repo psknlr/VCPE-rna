@@ -125,9 +125,71 @@ def test_baselines_are_reported_beside_the_model(trained):
     # neighbor_prior is absent without a STRING table on purpose: with no graph it
     # is identical to train_mean, and a duplicate row reads like a second,
     # independent control agreeing with the first.
-    assert set(final["baselines"]) == {"zero", "train_mean", "knn_esm2", "ridge_esm2"}
+    assert set(final["baselines"]) == {
+        "zero", "train_mean", "knn_esm2", "ridge_esm2",
+        # the same estimators with their one knob chosen on inner validation,
+        # plus the non-linear rung between a linear map and the head
+        "ridge_esm2_sel", "knn_esm2_sel", "rff_ridge_esm2_sel"}
     for m in final["baselines"].values():
         assert np.isfinite(m["pearson_dev"])
+
+
+def test_every_control_row_carries_its_hyperparameters_and_how_they_were_chosen(trained):
+    """A control quoted without its hyperparameter is as uncomparable as a score
+    quoted without its estimator: alpha=1.0 and a selected alpha are different
+    controls, and the gap between them is part of what the table shows."""
+    out, log = trained
+    final = json.loads((out / "final_report.json").read_text())
+    b = final["baselines"]
+    assert b["ridge_esm2"]["hyperparameters"] == {"alpha": 1.0,
+                                                  "chosen_by": "fixed default"}
+    assert b["knn_esm2"]["hyperparameters"] == {"k": 10,
+                                                "chosen_by": "fixed default"}
+    for name in ("ridge_esm2_sel", "knn_esm2_sel", "rff_ridge_esm2_sel"):
+        assert b[name]["hyperparameters"]["chosen_by"] == "inner_val"
+
+    sel = final["control_selection"]
+    assert sel["selected_on"] == "inner_val"
+    assert sel["n_val_items"] == final["n_inner_val_items"], \
+        "the controls must be selected on the slice that selects the head's epoch"
+    assert sel["n_fit_items"] == final["n_fit_items"]
+    assert len(sel["grids"]["ridge_alpha"]) >= 5
+    assert "held-out set not consulted" in log
+
+
+def test_each_control_carries_a_paired_item_level_interval_against_the_model(trained):
+    """Every comparison in this repository was settled by a normal approximation
+    over 3 seeds, which at n=3 is wide almost regardless of the data. The
+    item-level interval is a different and much larger sample -- and it must say
+    what it does not cover, or a reader will take a three-seed tie as resolved."""
+    out, _ = trained
+    final = json.loads((out / "final_report.json").read_text())
+    for name, m in final["baselines"].items():
+        pb = m["paired_vs_model_items"]
+        assert pb["resampled"] == "items within one split"
+        assert "run_seeds" in pb["does_not_cover"]
+        # the reported difference must be the one the two scored numbers imply
+        assert pb["difference"] == pytest.approx(
+            final["pearson_dev"] - m["pearson_dev"], abs=1e-9), \
+            f"{name}'s paired difference disagrees with its own row"
+
+
+def test_secondary_metrics_are_reported_with_their_chance_levels(trained):
+    """ERRATA E2 was a metric whose chance level was misscaled, so chance read
+    0.25. The chance level now travels with the number."""
+    out, _ = trained
+    final = json.loads((out / "final_report.json").read_text())
+    rows = [final] + list(final["baselines"].values())
+    for r in rows:
+        assert set(r["secondary_metric_chance_levels"]) == {
+            "spearman_dev", "enrichment_top5pct_dev",
+            "direction_agreement_top10pct_dev"}
+        assert r["secondary_metric_chance_levels"]["enrichment_top5pct_dev"] == 1.0
+        for k in r["secondary_metric_chance_levels"]:
+            assert k in r, f"{k} has a chance level but no value"
+    # the floor baseline must sit at chance on the metrics that have one
+    zero = final["baselines"]["zero"]
+    assert zero["spearman_dev"] == pytest.approx(0.0)
 
 
 def test_checkpoint_records_its_selection_and_split(trained):

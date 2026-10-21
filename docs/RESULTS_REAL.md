@@ -33,6 +33,29 @@ made.
 > re-run on the corrected footing has not been done. The code is fixed and the
 > accounting is now asserted in the report; the predictions the re-run can
 > falsify are written down under E16.
+>
+> ### ⚠️ And every `ridge_esm2` / `knn_esm2` number below is an *unfitted* control
+>
+> `alpha` was 1.0 and `k` was 10 in every table here — fixed defaults, never
+> selected on anything — while the head's epoch is chosen on an inner split and
+> its lr / width / decay were tuned over many runs on this data
+> ([ERRATA E18](ERRATA.md#e18--the-controls-were-never-allowed-to-fit-their-one-knob-and-the-non-linearity-rung-was-missing)).
+> Two conclusions below rest on that: the **+0.027 over ridge on ESM2-150M**, and
+> **"ridge gains twice what the head does"** on the graph table — a comparison of
+> two gains, both measured at a penalty that was never fitted, and `alpha=1.0` on
+> 1280 dimensions is not the same regularisation as on 640.
+>
+> There is also a rung missing under the central claim. "Its non-linearity was
+> substituting for information the representation lacked" is a statement about
+> non-linearity, and no *generic* non-linear map on these features was ever run,
+> so any margin over a linear map was credited to the architecture by default.
+> `rff_ridge_esm2_sel` now supplies that row.
+>
+> And the intervals here are normal approximations over **3 seeds**. The
+> head-vs-ridge CI of [-0.031, +0.026] is consistent with a real effect of either
+> sign, so "tie" has been doing double duty for "no difference" and "not enough
+> seeds to tell". The ~350 held-out perturbations now also give a paired
+> item-level interval on every row.
 
 ## What was run
 
