@@ -13,6 +13,50 @@ never quote a number without its estimator, its split, its gene panel, and its
 embedding table, because mixing any of those is how the withdrawn figures were
 made.
 
+> ### ⚠️ Every response-line number below was produced under the E16 fit rule
+>
+> The inner-validation slice that selected the epoch was **also used as training
+> data** ([ERRATA E16](ERRATA.md#e16--the-inner-validation-slice-was-also-used-as-training-data)).
+> Two things follow, and they bear on how this whole document reads:
+>
+> * **"Still improving when the budget ends" was partly an artefact.** The
+>   selection curve was a training curve, so it could only rise — which is why
+>   selection returned epochs 28/30, 78/80 and 150/150. The sections below treat
+>   that pattern as a property of the model. Some of it may be, and the re-run
+>   will say; the measurement could not have shown otherwise.
+> * **The head was fitted on ~18% more items than GEARS and CPA** in Table D,
+>   whose fairness block does not list that asymmetry.
+>
+> Nothing here is withdrawn: the test split was scored once, after selection, and
+> no number below was selected on the slice it reports. But the head-vs-ridge
+> comparison these tables rest on was not run on an identical footing, and the
+> re-run on the corrected footing has not been done. The code is fixed and the
+> accounting is now asserted in the report; the predictions the re-run can
+> falsify are written down under E16.
+>
+> ### ⚠️ And every `ridge_esm2` / `knn_esm2` number below is an *unfitted* control
+>
+> `alpha` was 1.0 and `k` was 10 in every table here — fixed defaults, never
+> selected on anything — while the head's epoch is chosen on an inner split and
+> its lr / width / decay were tuned over many runs on this data
+> ([ERRATA E18](ERRATA.md#e18--the-controls-were-never-allowed-to-fit-their-one-knob-and-the-non-linearity-rung-was-missing)).
+> Two conclusions below rest on that: the **+0.027 over ridge on ESM2-150M**, and
+> **"ridge gains twice what the head does"** on the graph table — a comparison of
+> two gains, both measured at a penalty that was never fitted, and `alpha=1.0` on
+> 1280 dimensions is not the same regularisation as on 640.
+>
+> There is also a rung missing under the central claim. "Its non-linearity was
+> substituting for information the representation lacked" is a statement about
+> non-linearity, and no *generic* non-linear map on these features was ever run,
+> so any margin over a linear map was credited to the architecture by default.
+> `rff_ridge_esm2_sel` now supplies that row.
+>
+> And the intervals here are normal approximations over **3 seeds**. The
+> head-vs-ridge CI of [-0.031, +0.026] is consistent with a real effect of either
+> sign, so "tie" has been doing double duty for "no difference" and "not enough
+> seeds to tell". The ~350 held-out perturbations now also give a paired
+> item-level interval on every row.
+
 ## What was run
 
 Two real CRISPRi screens, the kind of knockdown this model claims to predict:
@@ -361,6 +405,15 @@ record rather than a reason to quietly substitute something smaller.** It needs
 about 3.3 hours and the container hosting this session restarted twice mid-run; no
 seed finished. Resuming after an infrastructure failure is not a budget change, so
 it was restarted unchanged, and it died again.
+
+> **The obstacle was the lack of a resume, and that is now fixed.** `--resume`
+> with `--stop_after_epochs` completes a declared budget in slices the host can
+> hold, and a chunked run is identical to an uninterrupted one to the last digit
+> — optimizer, scheduler and both RNG states are restored, and the per-epoch
+> losses match (asserted in `tests/test_pipeline_smoke.py`). The budget cannot
+> change on a resume, and an incomplete run writes no report, so slicing cannot
+> become a quietly extended budget. See REPRODUCE.md §2.2b. The declared run has
+> still not been *run*; what changed is that a restart no longer costs it.
 
 What is reported instead is a **single-seed convergence probe** at 150 epochs,
 labelled as such. It is explicitly **not** the declared three-seed paired

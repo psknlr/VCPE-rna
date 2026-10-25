@@ -6,6 +6,17 @@ Protocol (inherited from P2.1/P2.2, kept intact):
   true_dev     = true_fc - common_fc   <- the model predicts THIS directly
   pred_fc      = pred_dev + common_fc  (for full-fc metrics)
 
+Three item sets, and they do not overlap:
+  gradient     = training items MINUS the inner-validation slice
+  inner-val    = selects the epoch; never reported as performance
+  test         = scored exactly once, at the selected epoch
+The control baselines are fitted on the gradient set too, so every row of the
+results table has seen the same items. Before this was enforced, the inner
+validation slice was also trained on -- so the "selection" curve was a training
+curve and the head had ~18% more fitting data than the external baselines it was
+compared with (docs/ERRATA.md E16). `--train_on_inner_val` restores the old
+behaviour for measurement.
+
 Eval reports full-fc metrics (mse_DE / pearson_delta / top50) AND dev metrics
 (mse_dev / pearson_dev / top50_dev) PLUS a built-in conditioning ablation:
 each epoch, pred_dev is recomputed with the target ESM2 vector zeroed and
@@ -15,6 +26,7 @@ If conditioning is alive, ablation_r drops well below 1.
 No SE / flash-attention / MAP repo / env vars required. Runs in minutes.
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -33,9 +45,133 @@ for _sib in ("maprna_p1", "maprna_p2", "."):
 
 from ds_knockdown import build_symbol2row, load_kd_datasets, make_hvg_list, resolve_pert_row  # noqa: E402
 from model_dev import DeviationModel, load_esm_matrix, load_dev_state  # noqa: E402
-from baselines import run_all  # noqa: E402
+from baselines import run_all, select_control_hyperparams  # noqa: E402
 from eval_metrics import (  # noqa: E402
-    per_item_correlation, pooled_correlation, top_k_overlap)
+    direction_agreement, enrichment_factor, paired_bootstrap_per_item,
+    per_item_correlation, per_item_correlation_detail, per_item_spearman,
+    pooled_correlation, top_k_overlap)
+
+
+RESUME_FILE = "resume_state.pt"
+
+# The protocol fields a resumed run must agree with the interrupted one about.
+# Resuming into a different experiment would splice two runs into one number,
+# which is the traceability failure of ERRATA E11 with a longer fuse.
+RESUME_FINGERPRINT_ARGS = (
+    "data_dirs", "esm_table", "string_neighbors", "rna_encoder_ckpt", "n_hvg",
+    "hvg_from", "split_by", "test_frac", "min_cells", "seed", "inner_val_frac",
+    "train_on_inner_val", "use_mask", "batch_size", "lr", "weight_decay",
+    "d_model", "epochs")
+
+
+def resume_fingerprint(args, data, fit_pos):
+    """What must match for a resumed run to be the same run.
+
+    Includes the derived split, not only the arguments that produced it: an
+    ingest script or a data file could change underneath an interrupted run and
+    rebuild a different split from identical flags.
+    """
+    def _h(a):
+        return hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest()[:16]
+    fp = {k: getattr(args, k, None) for k in RESUME_FINGERPRINT_ARGS}
+    fp["hvg_rows"] = _h(np.asarray(data["hvg_rows"], dtype=np.int64))
+    fp["rows_tr"] = _h(np.asarray(data["rows_tr"], dtype=np.int64))
+    fp["rows_te"] = _h(np.asarray(data["rows_te"], dtype=np.int64))
+    fp["is_inner_val"] = _h(np.asarray(data["is_inner_val"], dtype=np.int8))
+    fp["fit_pos"] = _h(np.asarray(fit_pos, dtype=np.int64))
+    return fp
+
+
+def save_resume_state(path, *, epochs_done, args, model, opt, sched, best_pd,
+                      best_epoch, fingerprint):
+    """Write the state atomically: a torn state file is worse than none.
+
+    The RNG states go in too, so a resumed run continues the same stream rather
+    than starting a statistically different one at the same epoch number.
+    """
+    state = dict(
+        epochs_done=int(epochs_done), epochs_budget=int(args.epochs),
+        best_pd=float(best_pd), best_epoch=int(best_epoch),
+        fingerprint=fingerprint,
+        model_state_dict=model.state_dict(), optimizer=opt.state_dict(),
+        scheduler=sched.state_dict(),
+        torch_rng=torch.get_rng_state(), numpy_rng=np.random.get_state(),
+        provenance=stamp(args=args))
+    tmp = path + ".tmp"
+    torch.save(state, tmp)
+    os.replace(tmp, path)
+
+
+def load_resume_state(path, args, fingerprint):
+    """Load and verify. A mismatch refuses rather than resuming into another run.
+
+    The budget is part of the fingerprint on purpose. Resuming after an
+    infrastructure failure is not a budget change -- and `--epochs 150` resumed
+    as `--epochs 200` is how a declared budget quietly becomes "extend until the
+    favoured model wins", which RESULTS_REAL.md names as the abuse to avoid.
+    """
+    st = torch.load(path, map_location="cpu", weights_only=False)
+    if st.get("epochs_budget") != args.epochs:
+        raise SystemExit(
+            f"this run was declared at {st.get('epochs_budget')} epochs and you "
+            f"passed --epochs {args.epochs}. Resuming is not a budget change: "
+            f"re-declare the budget in a new --out_dir, so the longer run is a "
+            f"new run with its own record.")
+    old, new = st.get("fingerprint", {}), fingerprint
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    if diff:
+        raise SystemExit(
+            "the state in this --out_dir belongs to a different experiment, so "
+            "resuming it would splice two runs into one number. Differences "
+            f"(stored, now): {diff}")
+    return st
+
+
+def _control_hyperparameters(name, args, selected):
+    """What each control actually ran at, in its own row of the report.
+
+    A control quoted without its hyperparameter is as uncomparable as a score
+    quoted without its estimator: `ridge_esm2` at alpha=1.0 and `ridge_esm2_sel`
+    at a selected alpha are different controls, and the difference between them
+    is part of what the table shows.
+    """
+    sel = selected or {}
+    if name == "ridge_esm2":
+        return {"alpha": float(args.ridge_alpha), "chosen_by": "fixed default"}
+    if name == "knn_esm2":
+        return {"k": int(args.knn_k), "chosen_by": "fixed default"}
+    if name == "ridge_esm2_sel":
+        return {"alpha": sel.get("ridge_alpha"), "chosen_by": "inner_val"}
+    if name == "knn_esm2_sel":
+        return {"k": sel.get("knn_k"), "chosen_by": "inner_val"}
+    if name == "rff_ridge_esm2_sel":
+        return {"alpha": sel.get("rff_alpha"),
+                "gamma_mult": sel.get("rff_gamma_mult"),
+                "n_features": sel.get("rff_n_features"),
+                "seed": sel.get("rff_seed"), "chosen_by": "inner_val"}
+    return {"chosen_by": "no hyperparameters"}
+
+
+def secondary_metrics(true, pred, mask):
+    """Metrics a Pearson correlation does not imply, under their own names.
+
+    `pearson_dev` is the headline and stays the headline. But a model can
+    correlate well and still get the sign wrong on the genes with the largest
+    responses, and ERRATA E2 was a top-k enrichment whose chance level was
+    misscaled, so both are worth carrying beside it -- computed once here, for
+    the model and for every control, from the shared definitions.
+    """
+    return {
+        "spearman_dev": per_item_spearman(true, pred, mask),
+        "enrichment_top5pct_dev": enrichment_factor(true, pred, k_frac=0.05,
+                                                    mask=mask),
+        "direction_agreement_top10pct_dev": direction_agreement(
+            true, pred, mask=mask, top_frac=0.10),
+        "secondary_metric_chance_levels": {
+            "spearman_dev": 0.0, "enrichment_top5pct_dev": 1.0,
+            "direction_agreement_top10pct_dev": 0.5},
+    }
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from provenance import stamp, write_json  # noqa: E402
 
@@ -69,6 +205,16 @@ def parse_args():
     p.add_argument("--inner_val_frac", type=float, default=0.15,
                    help="fraction of TRAINING items held out for epoch/checkpoint "
                         "selection; the test split is scored once, afterwards")
+    p.add_argument("--train_on_inner_val", action="store_true", default=False,
+                   help="reproduce the pre-fix behaviour in which the inner "
+                        "validation items were ALSO used as training batches, so "
+                        "the epoch was selected on data the model had fitted "
+                        "(docs/ERRATA.md E16). With this flag the selection curve "
+                        "is a training curve: it rises for as long as the budget "
+                        "lasts, which is why every long run here selected its "
+                        "final epoch. Kept so the effect can be measured by "
+                        "flipping one flag; it is not a configuration to train "
+                        "for release.")
     p.add_argument("--no_mask", dest="use_mask", action="store_false", default=True,
                    help="reproduce the pre-v4 behaviour in which HVG columns a "
                         "dataset never measured entered the loss and every metric "
@@ -80,7 +226,44 @@ def parse_args():
                         "(docs/ERRATA.md E6); it is not a configuration to train "
                         "for release.\n")
     p.add_argument("--knn_k", type=int, default=10,
-                   help="neighbours for the ESM2 retrieval control baseline")
+                   help="neighbours for the ESM2 retrieval control baseline, as a "
+                        "fixed default. The `knn_esm2_sel` row selects k on the "
+                        "inner-validation slice instead; this one is kept so the "
+                        "name means in a new table what it meant in an old one.")
+    p.add_argument("--ridge_alpha", type=float, default=1.0,
+                   help="ridge penalty for the fixed-default `ridge_esm2` row. "
+                        "The `ridge_esm2_sel` row selects it on inner validation.")
+    p.add_argument("--no_control_selection", action="store_true", default=False,
+                   help="skip inner-validation selection for the control "
+                        "baselines, leaving only the fixed-default rows. Selection "
+                        "costs a handful of closed-form solves; this exists for "
+                        "reproducing a table made before it.")
+    p.add_argument("--rff_features", type=int, default=1024,
+                   help="random Fourier features for the non-linear control. This "
+                        "is the rung between a linear map and the head: a generic "
+                        "non-linear map on identical features, fitted in closed "
+                        "form. If it matches the head, the head's margin over "
+                        "ridge is non-linearity rather than architecture.")
+    p.add_argument("--n_boot_items", type=int, default=2000,
+                   help="bootstrap replicates for the paired item-level interval "
+                        "against each control. 0 disables it.")
+    p.add_argument("--resume", action="store_true", default=False,
+                   help="write a resume state after every epoch and continue from "
+                        "it if one is already in --out_dir. The pre-declared "
+                        "150-epoch run in RESULTS_REAL.md was never completed "
+                        "because this container restarted twice mid-run, and "
+                        "without this a restart costs the whole run. The stored "
+                        "budget, the split and the data fingerprint must match, "
+                        "so a resume cannot silently become a different "
+                        "experiment or a longer budget.")
+    p.add_argument("--stop_after_epochs", type=int, default=0,
+                   help="run at most this many epochs in THIS invocation, then "
+                        "save the resume state and exit without scoring the "
+                        "held-out set. Requires --resume. It is how a declared "
+                        "budget is completed on a host that cannot hold the whole "
+                        "run: the same command, run again, continues where it "
+                        "stopped. An incomplete run writes no final report, so a "
+                        "partial budget cannot be quoted as a result.")
     p.add_argument("--hvg_from", choices=("train", "all"), default="train",
                    help="which perturbations the response panel is ranked on. train "
                         "(default) is correct. all reproduces the earlier behaviour, "
@@ -336,7 +519,8 @@ def make_rna_emb_lookup(args, data):
 # ---------------- eval ----------------
 
 @torch.no_grad()
-def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
+def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True,
+             return_pred=False):
     """split: 'test' | 'train' | 'inner_val' | 'inner_train'.
 
     'inner_val' is the slice used for epoch/checkpoint selection; 'test' must be
@@ -413,27 +597,21 @@ def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
     def _per_item(pred, true, k=50):
         """Per-perturbation Pearson and top-k overlap over measured columns only.
 
+        Delegates to `eval_metrics`, which the baselines are also scored by. This
+        used to be a second implementation living here, differing from the shared
+        one only in its degeneracy threshold (1e-6 against 1e-12) -- so the model
+        and the controls in the same table were scored by two implementations of
+        `pearson_dev`. That is E4's shape one level down, and
+        `tests/test_metrics.py` now pins the two as equal on profiles whose std
+        is not inside that window, which is every real one.
+
         The top-k term is skipped for items with fewer than 2k measured columns:
         taking the top n of n gives 1.0 by construction, which reads as a perfect
         score while carrying no information.
         """
-        prs, tops = [], []
-        for b in range(len(true)):
-            m = mask[b]
-            if m.sum() < 10:
-                continue
-            t, p = true[b][m], pred[b][m]
-            if t.std() > 1e-6 and p.std() > 1e-6:
-                prs.append(float(np.corrcoef(t, p)[0, 1]))
-            else:
-                prs.append(0.0)
-            if len(t) >= 2 * k:
-                tops.append(len(set(np.argsort(-np.abs(t))[:k])
-                                & set(np.argsort(-np.abs(p))[:k])) / k)
-        if not prs:
-            return float("nan"), float("nan"), 0
-        top = float(np.mean(tops)) if tops else float("nan")
-        return float(np.mean(prs)), top, len(prs)
+        d = per_item_correlation_detail(true, pred, mask)
+        return (d["value"], top_k_overlap(true, pred, k=k, mask=mask, min_ratio=2),
+                d["n_scored"])
 
     out["mse_DE"] = _masked_mse(pred_fc, fc)
     out["mse_DE_baseline_ctrl"] = _masked_mse(np.zeros_like(fc), fc)
@@ -443,10 +621,18 @@ def evaluate(model, data, split, device, esm_override_mode=None, use_mask=True):
     pd_, td_, n_scored = _per_item(pred_dev, dev)
     out["pearson_dev"], out["top50_dev"] = pd_, td_
     out["n_scored_perturbations"] = n_scored
+    # Metrics that a correlation does not imply, computed for the model here and
+    # for every control in the final table, so the rows are comparable.
+    out.update(secondary_metrics(dev, pred_dev, mask))
+    _d = per_item_correlation_detail(dev, pred_dev, mask)
+    out["n_degenerate_perturbations"] = _d["n_degenerate"]
+    out["n_skipped_too_few_features"] = _d["n_skipped_too_few_features"]
     # Estimator label, so that this number is never silently compared against
     # eval_fair.py's flattened pooled correlation -- they are different
     # estimators and differ by ~1.5x on the same checkpoint.
     out["pearson_dev_estimator"] = "mean_over_perturbations_of_within_perturbation_r"
+    if return_pred:
+        return out, pred_dev
     return out
 
 
@@ -503,6 +689,35 @@ def main():
     rna_tr = (data["rna_embs"][:len(data["train_items"])].to(device)
               if model.proj_r is not None else None)
 
+    # ---- which training items the gradient actually sees ----
+    # The inner-validation slice exists to select the epoch. If the model also
+    # trains on it, that slice is training data and its correlation rises with
+    # the training loss, so "selection" picks whatever epoch the budget ends on
+    # -- which is what every long run here did (epochs 78/80, 150/150). It also
+    # silently gave the head ~18% more training items than GEARS and CPA, which
+    # `baseline_common.inner_split_items` hands the inner-TRAIN items only while
+    # documenting the footing as identical. See docs/ERRATA.md E16.
+    is_val = np.asarray(data["is_inner_val"], dtype=bool)
+    fit_pos = (np.arange(len(data["train_items"])) if args.train_on_inner_val
+               else np.flatnonzero(~is_val))
+    if not args.train_on_inner_val:
+        # Mechanical, not a promise in a comment: the gradient set and the
+        # selection set must not intersect.
+        assert not is_val[fit_pos].any(), \
+            "inner-validation items reached the training batches"
+    if len(fit_pos) == 0:
+        raise SystemExit("every training item landed in the inner-validation "
+                         "split, so there is nothing to fit on; lower "
+                         "--inner_val_frac")
+    fit_pos_t = torch.as_tensor(fit_pos, dtype=torch.long)
+    print(f"[split] gradient items: {len(fit_pos)} of {len(data['train_items'])} "
+          f"training items"
+          + ("  (--train_on_inner_val: the selection slice is ALSO trained on, "
+             "so the selection curve is a training curve -- ERRATA E16)"
+             if args.train_on_inner_val else
+             "  (inner-val held out of the gradient, as the selection requires)"),
+          flush=True)
+
     log_path = os.path.join(args.out_dir, "train_log.jsonl")
     # The log is append-only, so a re-run into an existing out_dir concatenates two
     # runs whose epoch numbers both start at 1 -- which is what happened when a
@@ -530,11 +745,38 @@ def main():
               f"confused", flush=True)
     best_pd, best_epoch = -float('inf'), -1
     ckpt_path = os.path.join(args.out_dir, 'ckpt_p3_best_dev.pt')
-    n = len(rows_tr)
-    for epoch in range(args.epochs):
+    n = len(fit_pos_t)
+
+    # ---- resume ----
+    resume_path = os.path.join(args.out_dir, RESUME_FILE)
+    fingerprint = resume_fingerprint(args, data, fit_pos)
+    start_epoch = 0
+    if args.stop_after_epochs and not args.resume:
+        raise SystemExit("--stop_after_epochs needs --resume, or the epochs run "
+                         "in this invocation would be lost rather than continued")
+    if args.resume and os.path.exists(resume_path):
+        st = load_resume_state(resume_path, args, fingerprint)
+        model.load_state_dict(st["model_state_dict"])
+        opt.load_state_dict(st["optimizer"])
+        sched.load_state_dict(st["scheduler"])
+        torch.set_rng_state(st["torch_rng"])
+        np.random.set_state(st["numpy_rng"])
+        start_epoch = int(st["epochs_done"])
+        best_pd, best_epoch = float(st["best_pd"]), int(st["best_epoch"])
+        print(f"[resume] continuing at epoch {start_epoch + 1}/{args.epochs}; "
+              f"best inner-val so far {best_pd:.4f} at ep{best_epoch}. The RNG "
+              f"states were restored, so this continues the interrupted run "
+              f"rather than starting a statistically different one.", flush=True)
+    elif args.resume:
+        print(f"[resume] no state in {args.out_dir}; starting fresh and saving "
+              f"state after every epoch", flush=True)
+
+    stop_at = (min(args.epochs, start_epoch + args.stop_after_epochs)
+               if args.stop_after_epochs else args.epochs)
+    for epoch in range(start_epoch, stop_at):
         model.train()
         t0, run = time.time(), []
-        perm = torch.randperm(n)
+        perm = fit_pos_t[torch.randperm(n)]
         for lo in range(0, n, args.batch_size):
             idx = perm[lo:lo + args.batch_size]
             pred = model(rows_tr[idx], ds_tr[idx], cf_tr[idx],
@@ -612,15 +854,55 @@ def main():
                        ckpt_path)
             print(f"saved best inner-val ckpt (pearson_dev={best_pd:.4f}, "
                   f"ep{epoch + 1})", flush=True)
+        if args.resume:
+            save_resume_state(resume_path, epochs_done=epoch + 1, args=args,
+                              model=model, opt=opt, sched=sched, best_pd=best_pd,
+                              best_epoch=best_epoch, fingerprint=fingerprint)
+
+    if stop_at < args.epochs:
+        # No final report: a partial budget must not be quotable as a result.
+        print(f"\nSTOPPED at {stop_at}/{args.epochs} epochs as asked. The "
+              f"held-out set was NOT scored and no final_report.json was "
+              f"written, because a number from a partial budget is not a result. "
+              f"Run the same command again to continue from epoch {stop_at + 1}.",
+              flush=True)
+        with open(log_path, "a") as f:
+            f.write(json.dumps(dict(
+                stopped_early=True, epochs_done=stop_at,
+                epochs_budget=args.epochs,
+                note="incomplete run; no held-out scoring")) + "\n")
+        return
 
     # ---- single, final scoring of the held-out split, at the selected epoch ----
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     load_dev_state(model, ck)
     model.to(device).eval()
-    final = evaluate(model, data, "test", device, use_mask=args.use_mask)
+    final, model_pred_te = evaluate(model, data, "test", device,
+                                    use_mask=args.use_mask, return_pred=True)
     final["selected_epoch"] = best_epoch
     final["inner_val_pearson_dev_at_selection"] = float(best_pd)
     final["split_by"] = args.split_by
+    # Protocol fields: which items were fitted, and by what rule. A number quoted
+    # without them is not comparable to another number (ERRATA E11, E16), and the
+    # controls below are fitted on the same set, so one field covers every row of
+    # the table.
+    final["trained_on_inner_val"] = bool(args.train_on_inner_val)
+    final["n_train_items"] = int(len(data["train_items"]))
+    final["n_fit_items"] = int(len(fit_pos))
+    final["n_inner_val_items"] = int(is_val.sum())
+    final["n_test_items"] = int(len(data["test_items"]))
+    # Whether the budget, not the data, ended the run. Selecting the last epoch
+    # means the model was still improving when the budget expired, so the number
+    # is a floor under that budget rather than a converged estimate -- stated
+    # mechanically here because RESULTS_REAL.md had to say it in prose three
+    # times (epochs 78/80, 150/150).
+    final["selection_hit_budget"] = bool(best_epoch >= args.epochs)
+    final["epochs_budget"] = int(args.epochs)
+    if final["selection_hit_budget"]:
+        print(f"\nNOTE: the selected epoch IS the budget ({best_epoch}/"
+              f"{args.epochs}), so this model had not converged. Read the held-out "
+              f"number as a floor under this budget, not as a converged estimate.",
+              flush=True)
 
     # ---- control baselines on the same split, same mask, same metrics ----
     # Without these there is no evidence that the learned head does more than
@@ -657,26 +939,102 @@ def main():
     which = ["zero", "train_mean", "knn_esm2", "ridge_esm2"]
     if is_nb_te is not None:
         which.append("neighbor_prior")
+
+    # ---- the controls get the selection discipline the head gets ----
+    # alpha=1.0 and k=10 were fixed defaults for every number this repository has
+    # published, while the head's epoch is selected on the inner split and its lr
+    # / width / decay were tuned over many runs on this data. A control denied its
+    # one knob is a weaker control than it looks. Chosen here on the
+    # inner-validation slice only -- the held-out set is not consulted, and the
+    # full grid goes into the report so the choice is auditable.
+    val_pos = np.flatnonzero(is_val)
+    selected = None
+    if len(val_pos) >= 2 and not args.no_control_selection:
+        print(f"\n[controls] selecting hyperparameters on {len(val_pos)} "
+              f"inner-validation items (held-out set not consulted)", flush=True)
+        selected = select_control_hyperparams(
+            data["dev_tr"][fit_pos], esm_np[data["rows_tr"][fit_pos]],
+            data["dev_tr"][val_pos], esm_np[data["rows_tr"][val_pos]],
+            mask_fit=(data["mask_tr"][fit_pos] if args.use_mask else None),
+            mask_val=(data["mask_tr"][val_pos] if args.use_mask else None),
+            rff_n_features=args.rff_features, seed=args.seed)
+        final["control_selection"] = selected
+        which += ["ridge_esm2_sel", "knn_esm2_sel", "rff_ridge_esm2_sel"]
+        print(f"[controls] ridge alpha={selected.get('ridge_alpha')} "
+              f"knn k={selected.get('knn_k')} "
+              f"rff alpha={selected.get('rff_alpha')} "
+              f"gamma_mult={selected.get('rff_gamma_mult')}", flush=True)
+        edge = [k for k in ("ridge_alpha", "knn_k")
+                if selected.get(k + "_at_grid_edge")]
+        if edge:
+            print(f"[controls] WARNING: {edge} selected at the edge of the grid, "
+                  f"so the grid may be what chose them, not the data", flush=True)
+    # Fit the controls on exactly the items the head's gradient saw. Handing them
+    # the inner-validation items as well would give them ~18% more fitting data
+    # than the model they are controls for, which is the same footing defect as
+    # E16 with the sign reversed.
     base_preds = run_all(
-        data["dev_tr"], esm_np[data["rows_tr"]], esm_np[data["rows_te"]],
-        mask_tr=(data["mask_tr"] if args.use_mask else None), knn_k=args.knn_k,
-        which=which, is_nb_tr=is_nb_tr, is_nb_te=is_nb_te)
+        data["dev_tr"][fit_pos], esm_np[data["rows_tr"][fit_pos]],
+        esm_np[data["rows_te"]],
+        mask_tr=(data["mask_tr"][fit_pos] if args.use_mask else None),
+        knn_k=args.knn_k, which=which, selected=selected,
+        is_nb_tr=(None if is_nb_tr is None else is_nb_tr[fit_pos]),
+        is_nb_te=is_nb_te)
     mask_te = data["mask_te"] if args.use_mask else np.ones_like(data["mask_te"])
     dev_te = data["dev_te"]
     final["baselines"] = {}
     for name, pred in base_preds.items():
-        final["baselines"][name] = dict(
+        row = dict(
             pearson_dev=per_item_correlation(dev_te, pred, mask_te),
             pearson_dev_pooled=pooled_correlation(dev_te, pred, mask_te),
-            top50_dev=top_k_overlap(dev_te, pred, k=50, mask=mask_te))
+            top50_dev=top_k_overlap(dev_te, pred, k=50, mask=mask_te),
+            fit_items=int(len(fit_pos)))
+        row.update(secondary_metrics(dev_te, pred, mask_te))
+        row["hyperparameters"] = _control_hyperparameters(name, args, selected)
+        # The paired item-level interval. It answers a different question from
+        # the multi-seed interval in run_seeds.py and does not replace it: this
+        # one varies the sample of perturbations within one split, that one
+        # varies which genes are held out. On this data ridge's own score moved
+        # 0.039 between splits, so the second is the harder question and a
+        # narrow interval here is not a settled comparison.
+        if args.n_boot_items > 0:
+            row["paired_vs_model_items"] = paired_bootstrap_per_item(
+                dev_te, model_pred_te, pred, mask=mask_te,
+                n_boot=args.n_boot_items, seed=args.seed)
+        final["baselines"][name] = row
+    final["footing"] = (
+        f"model and every control fitted on the same {len(fit_pos)} training "
+        f"items; the {int(is_val.sum())} inner-validation items selected the "
+        f"epoch and were "
+        + ("ALSO fitted (ERRATA E16 behaviour, --train_on_inner_val)"
+           if args.train_on_inner_val else "fitted by nobody")
+        + f"; {len(data['test_items'])} test items scored once")
 
     print("\n=== held-out results (scored once, at the selected epoch) ===",
           flush=True)
-    print(f"{'model':<14} pearson_dev={final['pearson_dev']:.4f}  "
-          f"top50_dev={final['top50_dev']:.4f}", flush=True)
+    print(f"every row fitted on the same {len(fit_pos)} items; "
+          f"{len(data['test_items'])} test items; estimator "
+          f"{final['pearson_dev_estimator']}", flush=True)
+    print(f"{'model':<19} {'pearson':>8} {'spearman':>9} {'EF5%':>6} "
+          f"{'dir':>6} {'paired vs model (items)':>30}", flush=True)
+    print(f"{'P3 head':<19} {final['pearson_dev']:>8.4f} "
+          f"{final['spearman_dev']:>9.4f} "
+          f"{final['enrichment_top5pct_dev']:>6.2f} "
+          f"{final['direction_agreement_top10pct_dev']:>6.3f} "
+          f"{'--':>30}", flush=True)
     for name, m in final["baselines"].items():
-        print(f"{name:<14} pearson_dev={m['pearson_dev']:.4f}  "
-              f"top50_dev={m['top50_dev']:.4f}", flush=True)
+        pb = m.get("paired_vs_model_items", {})
+        ci = pb.get("ci95") or [float("nan"), float("nan")]
+        txt = (f"{pb.get('difference', float('nan')):+.4f} "
+               f"[{ci[0]:+.4f},{ci[1]:+.4f}]")
+        print(f"{name:<19} {m['pearson_dev']:>8.4f} {m['spearman_dev']:>9.4f} "
+              f"{m['enrichment_top5pct_dev']:>6.2f} "
+              f"{m['direction_agreement_top10pct_dev']:>6.3f} {txt:>30}",
+          flush=True)
+    print("chance: spearman 0.0, EF5% 1.0, dir 0.5. The paired interval varies "
+          "the SAMPLE OF PERTURBATIONS within this one split; it does not vary "
+          "which genes are held out -- run_seeds.py answers that, and it is the "
+          "harder question.", flush=True)
     beaten = [n for n, m in final["baselines"].items()
               if final["pearson_dev"] <= m["pearson_dev"]]
     if beaten:
@@ -684,6 +1042,15 @@ def main():
               f"A conditioned model that loses to retrieval or to a linear map "
               f"over the same embeddings has not been shown to learn "
               f"perturbation-specific biology.", flush=True)
+    if selected and "rff_ridge_esm2_sel" in final["baselines"]:
+        rff = final["baselines"]["rff_ridge_esm2_sel"]["pearson_dev"]
+        lin = final["baselines"].get("ridge_esm2_sel",
+                                     final["baselines"]["ridge_esm2"])["pearson_dev"]
+        print(f"\n[non-linearity control] a generic non-linear map on the same "
+              f"features scores {rff:.4f} against the linear map's {lin:.4f} and "
+              f"the head's {final['pearson_dev']:.4f}. Read the head's margin "
+              f"over the LINEAR map as architecture only if it also exceeds this "
+              f"row; otherwise what the head has is non-linearity.", flush=True)
 
     ck["metrics"] = final
     torch.save(ck, ckpt_path)

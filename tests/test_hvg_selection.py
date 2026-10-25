@@ -16,6 +16,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "maprna_p1"))
 
+# ds_knockdown imports torch at module scope. Without this the file fails at
+# COLLECTION, which takes the whole `tests/` run down with it -- including the
+# torch-free metric regressions the fast CI job exists to enforce.
+pytest.importorskip("torch")
+
 from ds_knockdown import make_hvg_list  # noqa: E402
 
 

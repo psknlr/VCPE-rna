@@ -165,21 +165,122 @@ whose gene was trained on is not held out.
 baselines, the selected epoch, and a `provenance` block (git revision, dirty
 flag, full command line, all arguments, resolved package versions).
 
+**Three item sets, and they do not overlap.** The gradient sees the training
+items **minus** the inner-validation slice; the slice selects the epoch; the test
+split is scored once at the selected epoch. The controls in §2.2 are fitted on
+the gradient set too, so every row of the table has seen the same items. The
+report states the accounting — `n_fit_items`, `n_inner_val_items`,
+`n_test_items`, `trained_on_inner_val` and a `footing` sentence — because a
+number that does not carry its fit rule cannot be set beside another number.
+Check it rather than assuming it:
+
+```bash
+python - <<'PY'
+import json; r = json.load(open("runs/p3_seed0/final_report.json"))
+assert r["n_fit_items"] == r["n_train_items"] - r["n_inner_val_items"]
+assert all(b["fit_items"] == r["n_fit_items"] for b in r["baselines"].values())
+print(r["footing"]); print("selection hit the budget:", r["selection_hit_budget"])
+PY
+```
+
+Until this was enforced the slice was *also* trained on, so the selection curve
+was a training curve and selection landed on the final epoch in every long run
+(ERRATA E16). `--train_on_inner_val` reproduces that, for measuring the effect
+only. If `selection_hit_budget` is true the run ended because the budget ran out,
+so its held-out number is a floor under that budget rather than a converged
+estimate — and the way *not* to resolve that is to extend the budget until a
+favoured model wins. Declare the new budget first.
+
 ### 2.2 Read the baselines before the model
 
-The report prints the model next to four controls:
+The report prints the model next to seven controls:
 
-| Baseline | What it tests |
-|---|---|
-| `zero` | predict no residual — the floor conditioning must clear |
-| `train_mean` | the mean training residual, ignoring which gene was perturbed |
-| `knn_esm2` | average the residuals of the k nearest training perturbations in ESM2 space — **retrieval with no learning** |
-| `ridge_esm2` | closed-form linear map from the ESM2 vector to the residual profile |
+| Baseline | What it tests | Hyperparameters |
+|---|---|---|
+| `zero` | predict no residual — the floor conditioning must clear | none |
+| `train_mean` | the mean training residual, ignoring which gene was perturbed | none |
+| `knn_esm2` | average the residuals of the k nearest training perturbations in ESM2 space — **retrieval with no learning** | `k=10`, fixed default |
+| `ridge_esm2` | closed-form linear map from the ESM2 vector to the residual profile | `alpha=1.0`, fixed default |
+| `knn_esm2_sel` | the same retrieval rule, with `k` chosen on inner validation | selected |
+| `ridge_esm2_sel` | the same linear map, with `alpha` chosen on inner validation | selected |
+| `rff_ridge_esm2_sel` | **a generic non-linear map on identical features**: ridge over random Fourier features, closed form | selected |
 
-`knn_esm2` is the one that matters. It uses the same conditioning information the
-model receives. If the learned head does not beat it, the head is an expensive
-nearest-neighbour lookup, and the run prints a warning saying so. In this field
-cheap baselines have repeatedly proved hard to beat, so this is not a formality.
+`knn_esm2` is the one that matters for "is this retrieval". It uses the same
+conditioning information the model receives, and if the learned head does not
+beat it, the head is an expensive nearest-neighbour lookup — the run prints a
+warning saying so. In this field cheap baselines have repeatedly proved hard to
+beat, so this is not a formality.
+
+**Read the `_sel` rows, not the default ones, when comparing against the head.**
+For every number this repository published before, `alpha` was 1.0 and `k` was 10
+— chosen once, never selected — while the head's epoch is selected on an inner
+split and its lr / width / decay were tuned over many runs on this data
+(ERRATA E18). The `_sel` rows give the controls the same discipline: the knob is
+chosen on the inner-validation slice alone, fitted on the same items the head's
+gradient sees, and the full grid is in `control_selection` so the choice can be
+audited. The default rows are kept, unchanged, so a new table can still be set
+beside an old one. `--no_control_selection` turns selection off.
+
+**`rff_ridge_esm2_sel` is the rung that decides what a margin over ridge means.**
+The published reading of the head's +0.027 over `ridge_esm2` was that its
+non-linearity was substituting for information the representation lacked. A
+generic non-linear map on the same features tests that directly: if it matches
+the head, what the head has is non-linearity rather than architecture. The run
+prints all three numbers together with that reading attached.
+
+**Each control row also carries a paired item-level interval** against the head
+(`paired_vs_model_items`), resampling the held-out perturbations. It answers a
+different question from the multi-seed interval in §2.3 and replaces nothing:
+this one varies *which perturbations* are sampled within one split; that one
+varies *which genes are held out*, and on this data the split is the larger
+source of variation (ridge's own score moved 0.039 between splits). A narrow
+interval here beside a wide one there means the difference is stable given the
+split and not yet established across splits.
+
+Three secondary metrics travel with every row, each with its chance level:
+per-item Spearman (chance 0.0), top-5% enrichment scaled so that **chance is
+1.0** (ERRATA E2 was this metric with the wrong divisor), and direction agreement
+on each item's largest responses (chance 0.5). The last is what a user of a
+knockdown prediction acts on, and it is not implied by a correlation: a model can
+correlate well and still have the sign wrong on the genes with the largest
+effects.
+
+### 2.2b Completing a declared budget on a host that cannot hold the run
+
+The pre-declared 150-epoch × 3-seed comparison — the run that would settle
+head-vs-ridge — has never been completed. It needs about 3.3 hours and the
+container restarted twice mid-run; no seed finished, twice. A restart used to
+cost the whole run.
+
+```bash
+# declare the budget once, then run it in whatever slices the host allows
+CMD="python src/maprna_p3/train_p3.py --out_dir runs/p3_150 --epochs 150 \
+     --data_dirs ... --esm_table ... --split_by target_gene --resume"
+$CMD --stop_after_epochs 40      # epochs   1- 40, saves state, exits
+$CMD --stop_after_epochs 40      # epochs  41- 80
+$CMD --stop_after_epochs 40      # epochs  81-120
+$CMD                             # epochs 121-150, then scores held-out once
+```
+
+Three properties make this a continuation rather than a new experiment, and they
+are what the flag is worth:
+
+* **A resumed run is the interrupted run, to the last digit.** Optimizer,
+  scheduler and both RNG states are restored, so the per-epoch training losses,
+  the selected epoch and every held-out number are identical to an uninterrupted
+  run. `tests/test_pipeline_smoke.py` asserts that by running 8 epochs straight
+  through and 3+3+2 with two stops and requiring the two reports to be equal.
+* **The budget cannot change on a resume.** `--epochs 150` resumed as
+  `--epochs 200` is refused. Extending a budget until the favoured model wins is
+  the abuse this document warns about; a longer run is a new run, in a new
+  `--out_dir`, with its own declaration.
+* **An incomplete run writes no `final_report.json`.** A number from a partial
+  budget is not a result, so there is nothing to quote. The log records
+  `stopped_early` instead.
+
+The stored state also refuses to resume into a different experiment: the data
+fingerprint covers the gene panel, the split, the inner-validation mask and the
+gradient set, not just the flags that produced them.
 
 ### 2.3 Multiple seeds — required before quoting anything
 
@@ -374,10 +475,22 @@ predicting modification effects.
 
 Before a number leaves this repository:
 
-- [ ] Selected on an inner split, not the reported slice
+- [ ] Selected on an inner split, not the reported slice — and that split was
+      held out of the gradient (`n_fit_items == n_train_items -
+      n_inner_val_items`, E16), not merely scored separately
+- [ ] Every model in the table fitted on the same items (`fit_items` equal on
+      every row); any remaining asymmetry named in the `fairness` block
+- [ ] `selection_hit_budget` false, or the number reported as a floor under a
+      budget that was declared before the run
 - [ ] ≥5 seeds; mean ± sample sd and a CI, never a bare point estimate
-- [ ] Compared against `knn_esm2` / `ridge_esm2` (response) or the literature
-      comparators **with the estimator named** (efficacy), paired where possible
+- [ ] Compared against `knn_esm2_sel` / `ridge_esm2_sel` — the controls with
+      their knob selected on inner validation, not the fixed defaults (E18) —
+      or the literature comparators **with the estimator named** (efficacy),
+      paired where possible
+- [ ] A margin over the linear control checked against `rff_ridge_esm2_sel`
+      before it is called architecture rather than non-linearity
+- [ ] Both intervals reported where they exist: paired over items (within a
+      split) and paired over seeds (across splits), each labelled
 - [ ] Estimator stated explicitly (`per_pert` vs `pooled`; `pooled` vs
       `per_screen_median`)
 - [ ] Split grouping stated, and its leakage audited (`seq_dedup.py`, or the
